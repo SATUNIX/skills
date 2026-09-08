@@ -2,7 +2,31 @@
 
 status: design
 version: 1.0
+role: companion architecture
+depends_on: `adl1.md`
+supersedes: none
 scope: multi-agent persistent memory and coordination
+
+## relationship
+
+`adl1.md` defines the canonical ADL v1 language, semantics, source/wire model, and governance rules.
+
+`distributed_adl.md` defines the multi-agent memory and coordination architecture built on ADL v1.
+
+Distributed ADL MUST use ADL v1 semantics.
+
+Distributed ADL does not supersede or replace `adl1.md`.
+
+Operational skills implement both layers through progressive disclosure:
+
+```text
+adl/SKILL.md
+-> adl-bootstrap/SKILL.md
+-> adl-author/SKILL.md
+-> adl-memory-state/SKILL.md
+-> adl-context-pack/SKILL.md
+-> adl-govern/SKILL.md
+```
 
 ## goal
 
@@ -408,3 +432,13 @@ Prefix caching provides:
 - lower repeated prefill cost
 
 Combined, these components enable scalable multi-agent memory swarms with durable shared history, independent WIP branches, reviewed knowledge promotion, and controlled token cost.
+
+## ref
+
+- `adl1.md` — canonical ADL v1 language/specification.
+- `adl/SKILL.md` — autonomous ADL entry/router.
+- `adl-bootstrap/SKILL.md` — harness/repository bootstrap and migration.
+- `adl-author/SKILL.md` — ADL-S authoring.
+- `adl-memory-state/SKILL.md` — durable memory/state operations.
+- `adl-context-pack/SKILL.md` — retrieval, ADL-W packing, and prefix-cache optimization.
+- `adl-govern/SKILL.md` — linting, benchmarking, and governance.
