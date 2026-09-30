@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Satunix Carbon gallery</title>
+<!-- Open from a checkout (paths are relative), or serve the design/satunix-carbon folder. -->
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../components/bundle.css">
+<style>
+  .wrap { max-width: var(--content-max); margin: 0 auto; padding-inline: var(--gutter); }
+  section { margin-block: var(--spacing-10); }
+  .themes { display: flex; flex-wrap: wrap; gap: var(--spacing-05); }
+</style>
+</head>
+<body>
+<div class="wrap" id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="../components/bundle.js"></script>
+<script>
+  var S = window.SatunixCarbon, h = React.createElement;
+  var THEMES = ['g100', 'g90', 'g10', 'white'];
+
+  function Gallery() {
+    var _t = React.useState(new URLSearchParams(location.search).get('theme') || 'g100'), theme = _t[0], setTheme = _t[1];
+    React.useEffect(function () { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
+    var code = h('span', null,
+      h('span', { className: 'token comment' }, '// gate every action on scope'), '\n',
+      h('span', { className: 'token keyword' }, 'const'), ' plan ', h('span', { className: 'token operator' }, '='), ' ',
+      h('span', { className: 'token keyword' }, 'await'), ' agent.', h('span', { className: 'token function' }, 'plan'), '(scope);\n',
+      h('span', { className: 'token keyword' }, 'if'), ' (!roe.', h('span', { className: 'token function' }, 'allows'), '(plan)) ',
+      h('span', { className: 'token keyword' }, 'throw'), ' ', h('span', { className: 'token string' }, '"out of scope"'), ';\n');
+    return h('div', null,
+      h(S.SiteHeader, { name: 'Satunix', items: [{ label: 'writing', href: '#', current: true }, { label: 'work', href: '#' }, { label: 'projects', href: '#' }] }),
+      h('div', { className: 'themes', role: 'group', 'aria-label': 'Theme' },
+        THEMES.map(function (t) { return h(S.TextButton, { key: t, pressed: t === theme, onClick: function () { setTheme(t); } }, 'theme: ' + t); })),
+      h('section', null, h(S.SectionHead, { index: '01', label: 'actions', title: 'Buttons and links' }),
+        h('div', { className: 'sx-row' },
+          h(S.Button, null, 'Run scan'), h(S.Button, { kind: 'secondary' }, 'Save draft'), h(S.Button, { kind: 'tertiary' }, 'View report'),
+          h(S.Button, { kind: 'ghost' }, 'Cancel'), h(S.Button, { kind: 'danger' }, 'Revoke key'), h(S.Button, { disabled: true }, 'Disabled')),
+        h('p', { className: 'sx-row' }, 'Read the ', h(S.Link, { href: '#' }, 'threat model'), ' first. ',
+          h(S.TextButton, { pressed: true }, 'motion: on'), h(S.TextButton, null, 'replay'))),
+      h('section', null, h(S.SectionHead, { index: '02', label: 'status', title: 'Tags, fields, notifications' }),
+        h('div', { className: 'sx-row' }, h(S.Tag, { type: 'lime' }, 'live'), h(S.Tag, { type: 'violet' }, 'research'), h(S.Tag, { type: 'gray' }, 'archived'), h(S.Tag, { type: 'outline' }, 'rust')),
+        h('div', { className: 'sx-stack' },
+          h(S.TextInput, { labelText: 'Target scope', placeholder: '10.0.0.0/24', helperText: 'CIDR or hostname' }),
+          h(S.TextInput, { labelText: 'API key', defaultValue: 'sk-live', invalid: true, invalidText: 'Key is revoked' }),
+          h(S.InlineNotification, { kind: 'success', title: 'Scan complete.', subtitle: '14 findings, 2 critical.' }),
+          h(S.InlineNotification, { kind: 'error', title: 'Agent halted.', subtitle: 'Action outside rules of engagement.' }),
+          h(S.InlineNotification, { kind: 'warning', title: 'Approval pending.', subtitle: 'Operator sign-off required.' }),
+          h(S.InlineNotification, { kind: 'info', title: 'New build.', subtitle: 'Deployed to staging.' }))),
+      h('section', null, h(S.SectionHead, { index: '03', label: 'content', title: 'Tiles, lists, code' }),
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(16rem, 1fr))', gap: '2px' } },
+          h(S.Tile, { label: '01 / project', title: 'Evidence-first pentest agents', href: '#' }, 'Agents that prove every finding before they report it.'),
+          h(S.Tile, { label: '02 / project', title: 'Local inference rig', href: '#' }, '27B models on constrained hardware.')),
+        h('div', { style: { marginBlock: 'var(--spacing-10)' } }, h(S.EntryList, { itemsLabel: 'covers', entries: [
+          { title: 'Adversary emulation program', status: 'active', tagline: 'Red team, 2024 to now', summary: 'Built repeatable emulation plans tied to detection engineering.', items: ['C2', 'cloud IAM', 'reporting'], href: 'https://example.com' },
+          { title: 'Agent control plane', status: 'shipped', summary: 'Approval gates and audit logs for autonomous security agents.', items: ['policy', 'evidence'] }] })),
+        h(S.PostList, { posts: [
+          { date: '2026-08-14', title: 'Agents need a control plane', href: '#', description: 'Autonomy is an architecture problem before it is a model problem.' },
+          { date: '2026-07-02', title: 'TTFT matters more than tokens per second', href: '#', description: 'What latency feels like to an operator.', draft: 'draft: work in progress' }] }),
+        h('div', { style: { marginTop: 'var(--spacing-10)' } }, h(S.CodeBlock, { label: 'Example' }, code))));
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(h(Gallery));
+</script>
+</body>
+</html>

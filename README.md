@@ -2,6 +2,12 @@
 
 Public agent skills and reusable agent-system specifications.
 
+## Design
+
+Design systems agents can apply to web UIs.
+
+- [`design/satunix-carbon/SKILL.md`](design/satunix-carbon/SKILL.md) — Satunix Carbon: IBM Carbon roles and geometry in violet `#5200ff` and lime `#c2fe0b`, Helvetica + JetBrains Mono. Tokens (JSON + CSS, four themes), brand rules, 12 components (React and plain HTML), fonts, gallery and a restyle/verify workflow. Point an agent at this file to have it build or restyle a UI to spec.
+
 ## Token saving / ADL
 
 Agent Dense Language (ADL) is a dense, deterministic documentation and runtime-context protocol for AI agents.

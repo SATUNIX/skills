@@ -1,0 +1,321 @@
+/* Satunix Carbon: tokens. GENERATED from tokens.json by scripts/build_tokens_css.py. Do not edit by hand. */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-sans: Helvetica, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, Inconsolata, "Cascadia Code", ui-monospace, monospace;
+  --spacing-01: 2px;
+  --spacing-02: 4px;
+  --spacing-03: 8px;
+  --spacing-04: 12px;
+  --spacing-05: 16px;
+  --spacing-06: 24px;
+  --spacing-07: 32px;
+  --spacing-08: 40px;
+  --spacing-09: 48px;
+  --spacing-10: 64px;
+  --spacing-11: 80px;
+  --spacing-12: 128px;
+  --spacing-13: 160px;
+  --radius-none: 0px;
+  --radius-sm: 2px;
+  --radius-pill: 12px;
+  --measure: 66ch;
+  --content-max: 72rem;
+  --gutter: clamp(1rem, 5vw, 4rem);
+  --index-column: 11ch;
+  --control-height: 48px;
+  --background-brand: #5200ff;
+  --text-on-color: #ffffff;
+  --text-on-lime: #161616;
+  --button-primary: #5200ff;
+  --button-primary-hover: #4100cc;
+  --button-primary-active: #3100a0;
+  --button-danger: #da1e28;
+  --button-danger-hover: #b81921;
+  --text-on-color-disabled: #8d8d8d;
+  --support-warning: #f1c21b;
+  --brand-violet: #5200ff;
+  --brand-lime: #c2fe0b;
+  --violet-10: #f0ebff;
+  --violet-20: #dccfff;
+  --violet-30: #c2abff;
+  --violet-40: #a585ff;
+  --violet-50: #8a5cff;
+  --violet-60: #5200ff;
+  --violet-70: #4100cc;
+  --violet-80: #3100a0;
+  --violet-90: #22006f;
+  --violet-100: #140042;
+  --lime-10: #f6ffd9;
+  --lime-20: #e9ffa3;
+  --lime-30: #c2fe0b;
+  --lime-40: #a8db0a;
+  --lime-50: #8bb508;
+  --lime-60: #6b8c06;
+  --lime-70: #4f6804;
+  --lime-80: #384a03;
+  --lime-90: #243002;
+  --lime-100: #141b01;
+  --gray-10: #f4f4f4;
+  --gray-20: #e0e0e0;
+  --gray-30: #c6c6c6;
+  --gray-40: #a8a8a8;
+  --gray-50: #8d8d8d;
+  --gray-60: #6f6f6f;
+  --gray-70: #525252;
+  --gray-80: #393939;
+  --gray-90: #262626;
+  --gray-100: #161616;
+  --red-10: #fff1f1;
+  --red-20: #ffd7d9;
+  --red-30: #ffb3b8;
+  --red-40: #ff8389;
+  --red-50: #fa4d56;
+  --red-60: #da1e28;
+  --red-70: #a2191f;
+  --red-80: #750e13;
+  --red-90: #520408;
+  --red-100: #2d0709;
+  --yellow-20: #fddc69;
+  --yellow-30: #f1c21b;
+  --yellow-40: #d2a106;
+}
+
+:root, [data-theme="g100"] {
+  color-scheme: dark;
+  --background: #161616;
+  --background-hover: #292929;
+  --background-inverse: #f4f4f4;
+  --layer-01: #262626;
+  --layer-02: #393939;
+  --layer-03: #525252;
+  --layer-hover: #333333;
+  --layer-selected: #393939;
+  --field-01: #262626;
+  --border-subtle: #393939;
+  --border-strong: #6f6f6f;
+  --border-interactive: #a585ff;
+  --text-primary: #f5f5f5;
+  --text-secondary: #9a9a9a;
+  --text-placeholder: #6f6f6f;
+  --text-inverse: #161616;
+  --text-disabled: #8c8c8c40;
+  --link-primary: #a585ff;
+  --link-primary-hover: #c2abff;
+  --accent: #c2fe0b;
+  --interactive: #8a5cff;
+  --focus: #c2fe0b;
+  --focus-inset: #161616;
+  --button-secondary: #6f6f6f;
+  --button-secondary-hover: #606060;
+  --button-tertiary: #ffffff;
+  --button-disabled: #6f6f6f;
+  --support-success: #c2fe0b;
+  --support-error: #fa4d56;
+  --support-info: #a585ff;
+  --notification-background-success: #141b01;
+  --notification-background-error: #2d0709;
+  --notification-background-info: #140042;
+  --notification-background-warning: #2b2200;
+  --tag-background-lime: #c2fe0b;
+  --tag-background-violet: #5200ff;
+  --tag-color-violet: #ffffff;
+  --tag-background-gray: #393939;
+  --code-background: #1b1b1b;
+  --code-band: #222222;
+  --art: #cfcfcf;
+  --syntax-comment: #8b949e;
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-constant: #79c0ff;
+  --syntax-function: #d2a8ff;
+  --syntax-variable: #ffa657;
+  --syntax-tag: #7ee787;
+}
+
+[data-theme="g90"] {
+  color-scheme: dark;
+  --background: #262626;
+  --background-hover: #333333;
+  --background-inverse: #f4f4f4;
+  --layer-01: #393939;
+  --layer-02: #525252;
+  --layer-03: #6f6f6f;
+  --layer-hover: #474747;
+  --layer-selected: #525252;
+  --field-01: #393939;
+  --border-subtle: #525252;
+  --border-strong: #8d8d8d;
+  --border-interactive: #a585ff;
+  --text-primary: #f4f4f4;
+  --text-secondary: #c6c6c6;
+  --text-placeholder: #8d8d8d;
+  --text-inverse: #161616;
+  --text-disabled: #8c8c8c40;
+  --link-primary: #c2abff;
+  --link-primary-hover: #dccfff;
+  --accent: #c2fe0b;
+  --interactive: #a585ff;
+  --focus: #c2fe0b;
+  --focus-inset: #161616;
+  --button-secondary: #6f6f6f;
+  --button-secondary-hover: #606060;
+  --button-tertiary: #ffffff;
+  --button-disabled: #6f6f6f;
+  --support-success: #c2fe0b;
+  --support-error: #ff8389;
+  --support-info: #c2abff;
+  --notification-background-success: #141b01;
+  --notification-background-error: #2d0709;
+  --notification-background-info: #140042;
+  --notification-background-warning: #2b2200;
+  --tag-background-lime: #c2fe0b;
+  --tag-background-violet: #5200ff;
+  --tag-color-violet: #ffffff;
+  --tag-background-gray: #525252;
+  --code-background: #2c2c2c;
+  --code-band: #333333;
+  --art: #d0d0d0;
+  --syntax-comment: #a3abb4;
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-constant: #79c0ff;
+  --syntax-function: #d2a8ff;
+  --syntax-variable: #ffa657;
+  --syntax-tag: #7ee787;
+}
+
+[data-theme="g10"] {
+  color-scheme: light;
+  --background: #f4f4f4;
+  --background-hover: #e8e8e8;
+  --background-inverse: #393939;
+  --layer-01: #ffffff;
+  --layer-02: #f4f4f4;
+  --layer-03: #ffffff;
+  --layer-hover: #e8e8e8;
+  --layer-selected: #e0e0e0;
+  --field-01: #ffffff;
+  --border-subtle: #e0e0e0;
+  --border-strong: #8d8d8d;
+  --border-interactive: #5200ff;
+  --text-primary: #161616;
+  --text-secondary: #525252;
+  --text-placeholder: #a8a8a8;
+  --text-inverse: #f4f4f4;
+  --text-disabled: #16161640;
+  --link-primary: #5200ff;
+  --link-primary-hover: #4100cc;
+  --accent: #4f6804;
+  --interactive: #5200ff;
+  --focus: #5200ff;
+  --focus-inset: #ffffff;
+  --button-secondary: #393939;
+  --button-secondary-hover: #474747;
+  --button-tertiary: #5200ff;
+  --button-disabled: #c6c6c6;
+  --support-success: #4f6804;
+  --support-error: #da1e28;
+  --support-info: #5200ff;
+  --notification-background-success: #f6ffd9;
+  --notification-background-error: #fff1f1;
+  --notification-background-info: #f0ebff;
+  --notification-background-warning: #fcf4d6;
+  --tag-background-lime: #e9ffa3;
+  --tag-background-violet: #dccfff;
+  --tag-color-violet: #3100a0;
+  --tag-background-gray: #e0e0e0;
+  --code-background: #fafafa;
+  --code-band: #efefef;
+  --art: #3d3d3d;
+  --syntax-comment: #57606a;
+  --syntax-keyword: #cf222e;
+  --syntax-string: #0a3069;
+  --syntax-constant: #0550ae;
+  --syntax-function: #5200ff;
+  --syntax-variable: #953800;
+  --syntax-tag: #116329;
+}
+
+[data-theme="white"] {
+  color-scheme: light;
+  --background: #ffffff;
+  --background-hover: #e8e8e8;
+  --background-inverse: #393939;
+  --layer-01: #f4f4f4;
+  --layer-02: #ffffff;
+  --layer-03: #f4f4f4;
+  --layer-hover: #e8e8e8;
+  --layer-selected: #e0e0e0;
+  --field-01: #f4f4f4;
+  --border-subtle: #e0e0e0;
+  --border-strong: #8d8d8d;
+  --border-interactive: #5200ff;
+  --text-primary: #161616;
+  --text-secondary: #525252;
+  --text-placeholder: #a8a8a8;
+  --text-inverse: #f4f4f4;
+  --text-disabled: #16161640;
+  --link-primary: #5200ff;
+  --link-primary-hover: #4100cc;
+  --accent: #4f6804;
+  --interactive: #5200ff;
+  --focus: #5200ff;
+  --focus-inset: #ffffff;
+  --button-secondary: #393939;
+  --button-secondary-hover: #474747;
+  --button-tertiary: #5200ff;
+  --button-disabled: #c6c6c6;
+  --support-success: #4f6804;
+  --support-error: #da1e28;
+  --support-info: #5200ff;
+  --notification-background-success: #f6ffd9;
+  --notification-background-error: #fff1f1;
+  --notification-background-info: #f0ebff;
+  --notification-background-warning: #fcf4d6;
+  --tag-background-lime: #e9ffa3;
+  --tag-background-violet: #dccfff;
+  --tag-color-violet: #3100a0;
+  --tag-background-gray: #e0e0e0;
+  --code-background: #f7f7f7;
+  --code-band: #ededed;
+  --art: #3d3d3d;
+  --syntax-comment: #57606a;
+  --syntax-keyword: #cf222e;
+  --syntax-string: #0a3069;
+  --syntax-constant: #0550ae;
+  --syntax-function: #5200ff;
+  --syntax-variable: #953800;
+  --syntax-tag: #116329;
+}
+
+.sx-type-display-01 { font-family: var(--font-sans); font-size: 96px; line-height: 96px; font-weight: 700; letter-spacing: -0.02em; }
+.sx-type-heading-07 { font-family: var(--font-sans); font-size: 54px; line-height: 60px; font-weight: 700; letter-spacing: -0.01em; }
+.sx-type-heading-06 { font-family: var(--font-sans); font-size: 40px; line-height: 44px; font-weight: 700; letter-spacing: -0.01em; }
+.sx-type-heading-05 { font-family: var(--font-sans); font-size: 28px; line-height: 32px; font-weight: 700; letter-spacing: -0.01em; }
+.sx-type-heading-04 { font-family: var(--font-sans); font-size: 20px; line-height: 24px; font-weight: 700; letter-spacing: -0.01em; }
+.sx-type-heading-03 { font-family: var(--font-sans); font-size: 16px; line-height: 22px; font-weight: 700; letter-spacing: 0px; }
+.sx-type-heading-compact-01 { font-family: var(--font-sans); font-size: 14px; line-height: 18px; font-weight: 700; letter-spacing: 0.16px; }
+.sx-type-body-02 { font-family: var(--font-mono); font-size: 16px; line-height: 26px; font-weight: 400; letter-spacing: 0px; font-variant-ligatures: none; }
+.sx-type-body-long { font-family: var(--font-mono); font-size: 15px; line-height: 26px; font-weight: 400; letter-spacing: 0px; font-variant-ligatures: none; }
+.sx-type-body-01 { font-family: var(--font-mono); font-size: 14px; line-height: 20px; font-weight: 400; letter-spacing: 0px; font-variant-ligatures: none; }
+.sx-type-body-compact-01 { font-family: var(--font-mono); font-size: 14px; line-height: 18px; font-weight: 400; letter-spacing: 0px; font-variant-ligatures: none; }
+.sx-type-label-01 { font-family: var(--font-mono); font-size: 14px; line-height: 20px; font-weight: 400; letter-spacing: 0px; font-variant-ligatures: none; }
+.sx-type-helper-text-01 { font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 400; letter-spacing: 0.32px; font-variant-ligatures: none; }
+.sx-type-code-02 { font-family: var(--font-mono); font-size: 14px; line-height: 21px; font-weight: 400; letter-spacing: 0px; font-variant-ligatures: none; }
+.sx-type-code-01 { font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 400; letter-spacing: 0.32px; font-variant-ligatures: none; }
