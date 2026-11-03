@@ -1,0 +1,144 @@
+{
+  "gpu_nodes": [
+    {
+      "host": "gpu01",
+      "gpu": "A100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu02",
+      "gpu": "A100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu03",
+      "gpu": "A100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "drain"
+    },
+    {
+      "host": "gpu04",
+      "gpu": "A100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu05",
+      "gpu": "A100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu06",
+      "gpu": "A100",
+      "mem": "40GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu07",
+      "gpu": "A100",
+      "mem": "40GB",
+      "pool": "prod",
+      "state": "down"
+    },
+    {
+      "host": "gpu08",
+      "gpu": "A100",
+      "mem": "40GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu09",
+      "gpu": "H100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu10",
+      "gpu": "H100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu11",
+      "gpu": "H100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "ready"
+    },
+    {
+      "host": "gpu12",
+      "gpu": "H100",
+      "mem": "80GB",
+      "pool": "prod",
+      "state": "drain"
+    },
+    {
+      "host": "gpu13",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "ready"
+    },
+    {
+      "host": "gpu14",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "ready"
+    },
+    {
+      "host": "gpu15",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "ready"
+    },
+    {
+      "host": "gpu16",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "down"
+    },
+    {
+      "host": "gpu17",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "ready"
+    },
+    {
+      "host": "gpu18",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "ready"
+    },
+    {
+      "host": "gpu19",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "ready"
+    },
+    {
+      "host": "gpu20",
+      "gpu": "L4",
+      "mem": "24GB",
+      "pool": "stg",
+      "state": "ready"
+    }
+  ]
+}
