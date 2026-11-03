@@ -232,8 +232,11 @@ class TestRealistic(MigrateCase):
     def test_exact_output(self):
         out, err = self.migrate(REALISTIC, name="real.md")
         self.assertEqual(out, REALISTIC_V2)
-        # mitigate= is kept as body text; its in-file v1 id is rewritten to the new id and warned
-        self.assertEqual(err, "real.md:26: warning: mitigate=r1 kept as body text 'mitigate=r1'; "
+        # the title heading is dropped (warned); mitigate= is kept as body text, its in-file
+        # v1 id rewritten to the new id (warned)
+        self.assertEqual(err, "real.md:1: warning: heading '# inference memory' is the document title (the only "
+                              "level-1 heading, on the first line): dropped, not stored as a subject tag\n"
+                              "real.md:26: warning: mitigate=r1 kept as body text 'mitigate=r1'; "
                               "in-file v1 ids rewritten: r1->r1\n")
         self.assert_valid_v2(out)
 
@@ -366,7 +369,8 @@ class TestLibrary(unittest.TestCase):
     def test_goal_state_group_and_nonstandard_state(self):
         units = migrate.parse_v1("goal: ship v2\nstate: in progress\n\n# next block\nstate: done\n")
         lines = migrate.convert(units)
-        self.assertEqual(lines, ["g+1 doing ship v2 state=in progress", "v+1 state=done"])
+        # `# next block` is not on the first line: a subject heading, not the title
+        self.assertEqual(lines, ["g+1 doing ship v2 state=in progress", "v+1 state=done #next-block"])
         self.assertEqual([u.target for u in units], ["g+1", "g+1", "v+1"])
 
     def test_cause_without_goal_or_state(self):
@@ -503,6 +507,75 @@ class TestContinuation(MigrateCase):
         units = migrate.parse_v1("fact:\n- kept\nsome prose\n")
         self.assertEqual([u.src for u in units], ["kept", "some prose"])
 
+    def test_sub_bullets_belong_to_their_unit(self):
+        v1 = ("semantic:\nm1: router config\n  - timeout is 30 s but MUST\n    NOT exceed 60 s\n  - retries 3\n"
+              "  details:\n  - region ap-southeast-2\nm2: cache is warm ; why=prefix\n  - not encrypted\n"
+              "blocked:\n- integration test\n  - needs staging env\n"
+              "next:\n  - first task\n  - second task\n")
+        out, err = self.migrate(v1, name="sub.md")
+        self.assertEqual(out.splitlines()[1:], [
+            "% v1map sub.md m1=f1 m2=f2",
+            # sub-items and their lazily wrapped lines join the unit; `details:` is text
+            "f1 router config - timeout is 30 s but MUST NOT exceed 60 s - retries 3 details: - region ap-southeast-2",
+            "f2 cache is warm - not encrypted why:prefix",  # the sub-item is not part of why:
+            "t1 blocked integration test - needs staging env",
+            "t2 ready first task",  # items indented alike are siblings, not sub-items
+            "t3 ready second task",
+        ])
+        self.assertEqual(err, "")
+        self.assert_valid_v2(out)
+        out, _ = self.migrate(v1, "--check", name="sub.md")
+        self.assertEqual(out, "ok migrate 5 units; fidelity 100%\n")
+
+    def test_sub_bullets_of_a_procedure_are_steps(self):
+        v1 = ("procedural:\nm1: restart service\n  - drain requests\n    and wait 30 s\n  - restart vllm\n"
+              "  step:\n  1: check health -> 200\nm2: rotate logs\n")
+        out, _ = self.migrate(v1)
+        self.assertEqual(out.splitlines()[2:], [
+            "p1 restart service", " - drain requests and wait 30 s", " - restart vllm", " 1 check health -> 200",
+            "p2 rotate logs",
+        ])
+        self.assert_valid_v2(out)
+        self.assertEqual(core.parse_doc(out).records()[0].cont[0], "- drain requests and wait 30 s")
+
+    def test_indented_word_colon_is_not_a_section(self):
+        units = migrate.parse_v1("semantic:\nm1: router config\n  note:\n  - timeouts differ\nm2: next fact\n")
+        self.assertEqual([(u.section, u.text, u.subs) for u in units], [
+            ("semantic", "router config note:", ["- timeouts differ"]), ("semantic", "next fact", [])])
+        self.assertEqual(migrate.fidelity(units, migrate.convert(units)), [])
+        # an indented known section under an entry is text too
+        units = migrate.parse_v1("next:\n- deploy router\n  state: blocked\n")
+        self.assertEqual([(u.section, u.text) for u in units], [("next", "deploy router state: blocked")])
+        # a uniformly indented file: nothing to continue, so sections still open
+        units = migrate.parse_v1("    semantic:\n    m1: a fact\n      - detail\n    req:\n    r1: x MUST y\n")
+        self.assertEqual([(u.section, u.v1id, u.subs) for u in units],
+                         [("semantic", "m1", ["- detail"]), ("req", "r1", [])])
+
+    def test_split_claim_is_a_loss(self):
+        for v1, word in (("semantic:\nm1: router MUST\nNOT retry POST\n", "MUST"),
+                         ("req:\nr1: router MUST NOT\nr2: log request bodies MUST be off\n", "NOT"),
+                         ("fact:\n- deploy runs on the\n- staging cluster\n", "the"),
+                         ("blocked:\n- integration test\n  - waits for approval of\n- ops\n", "of"),
+                         ("semantic:\nm1: copy configs to\ntab hosts id,ip\nh1,10.0.0.1\n", "to")):
+            with self.subTest(v1=v1):
+                out, _ = self.migrate(v1, "--check", code=2)
+                self.assertRegex(out, r"v1\.md:2: \S+ split claim: text ends with '%s' and line \d starts a new unit"
+                                 % word)
+                self.assertNotIn("fidelity 100%", out)
+                out, err = self.migrate(v1, code=2)
+                self.assertEqual(out, "")
+                self.migrate(v1, "--into", ".adl/mem.adl", code=2)
+                self.assertEqual(self.p.mem(), "@adl2 mem\n")
+
+    def test_complete_claims_are_not_split(self):
+        v1 = ("fact:\n- dark mode is on\n- approved: no\n- set timeout to\n\n- 60 s is the limit\n"
+              "semantic:\nm1: router MUST\n  NOT retry POST\nm2: a\nm3: b\n")
+        out, _ = self.migrate(v1, "--check")
+        self.assertEqual(out, "ok migrate 7 units; fidelity 100%\n")
+        units = migrate.parse_v1(v1)
+        self.assertEqual([u.split for u in units], [None] * 7)
+        self.assertEqual(migrate.parse_v1("fact:\n- x MUST\n- y\n")[0].split, ("MUST", 3))
+
 
 class TestHeadings(MigrateCase):
     """(d) 2+ distinct headings: every unit is tagged with its nearest heading's slug."""
@@ -520,13 +593,59 @@ class TestHeadings(MigrateCase):
         ])
         self.assert_valid_v2(out)
 
-    def test_single_heading_adds_no_tags(self):
-        out, _ = self.migrate("# notes\nsemantic:\nm1: a\n# notes\nm2: b\n")
+    def test_title_heading_adds_no_tags(self):
+        out, err = self.migrate("\n# notes\nsemantic:\nm1: a\nm2: b\n")
         self.assertEqual(out.splitlines()[2:], ["f1 a", "f2 b"])
+        self.assertIn("v1.md:2: warning: heading '# notes' is the document title", err)
+        # a repeated level-1 heading is not a title: both are the same subject
+        out, err = self.migrate("# notes\nsemantic:\nm1: a\n# notes\nm2: b\n")
+        self.assertEqual(out.splitlines()[2:], ["f1 a #notes", "f2 b #notes"])
+        self.assertNotIn("document title", err)
 
     def test_same_heading_still_dedupes(self):
         out, _ = self.migrate("# a\nfact:\n- x\n- x\n# b\nfact:\n- y\n")
         self.assertEqual(out.splitlines()[2:], ["f1 x #a", "f2 y #b"])
+
+    def test_heading_path_is_the_subject(self):
+        # same nested heading under different parents: different subjects, never merged
+        v1 = ("# staging\n## database\nfact:\n- host db1 ; port=5432\n"
+              "# prod\n## database\nfact:\n- host db1 ; port=5432\n### replica\nfact:\n- host db1 ; port=5432\n"
+              "## cache\nfact:\n- host db1 ; port=5432\n")
+        out, err = self.migrate(v1)
+        self.assertEqual(out.splitlines()[2:], [
+            "f1 host db1 port=5432 #staging-database",
+            "f2 host db1 port=5432 #prod-database",
+            "f3 host db1 port=5432 #prod-database-replica",
+            "f4 host db1 port=5432 #prod-cache",  # ## pops ### and ##, keeps # prod
+        ])
+        self.assertEqual(err, "")
+        self.assert_valid_v2(out)
+        out, _ = self.migrate(v1, "--check")
+        self.assertEqual(out, "ok migrate 4 units; fidelity 100%\n")
+
+    def test_title_with_subject_headings(self):
+        v1 = ("# Ops notes\n\nfact:\n- applies everywhere\n## staging\nfact:\n- host is db1\n"
+              "## prod\nfact:\n- host is db1\n")
+        out, err = self.migrate(v1)
+        self.assertEqual(out.splitlines()[2:], ["f1 applies everywhere", "f2 host is db1 #staging",
+                                                "f3 host is db1 #prod"])
+        self.assertEqual(err, "v1.md:1: warning: heading '# Ops notes' is the document title (the only level-1 "
+                              "heading, on the first line): dropped, not stored as a subject tag\n")
+        # a level-1 heading that is not the first line is a subject; every unit under it is tagged
+        out, err = self.migrate("fact:\n- x is 1\n# staging\nfact:\n- y is 2\n## db\nfact:\n- z is 3\n")
+        self.assertEqual(out.splitlines()[2:], ["f1 x is 1", "f2 y is 2 #staging", "f3 z is 3 #staging-db"])
+        self.assertEqual(err, "")
+
+    def test_heading_path_slug_collisions_stay_distinct(self):
+        out, _ = self.migrate("# a\n## b\nfact:\n- x\n# a b\nfact:\n- y\n# a b ##\nfact:\n- z\n# a-b\nfact:\n- w\n")
+        self.assertEqual(out.splitlines()[2:], ["f1 x #a-b", "f2 y #a-b-2", "f3 z #a-b-2", "f4 w #a-b-3"])
+
+    def test_lost_subject_tag_is_a_loss(self):
+        units = migrate.parse_v1("# staging\nfact:\n- host is db1\n# prod\nfact:\n- host is db2\n")
+        lines = migrate.convert(units)
+        self.assertEqual(migrate.fidelity(units, lines), [])
+        losses = migrate.fidelity(units, [l.replace(" #prod", "") for l in lines])
+        self.assertEqual(losses, ["6: fact: -> f+2: subject #prod (heading prod) is not on the record"])
 
 
 class TestTables(MigrateCase):

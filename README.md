@@ -37,7 +37,7 @@ Install into a project (idempotent; `--dry-run` shows the plan; never changes pe
 git clone https://github.com/SATUNIX/skills && python3 skills/token_saving/adl/scripts/adl2.py install --root /path/to/project
 ```
 
-The installer creates `.adl/`, puts the skills into `.claude/skills/` and/or `.agents/skills/` (copies when the skills source is outside the project, as with the clone above; symlinks when it is inside; `--copy`/`--link` force a mode), adds a short policy block to `AGENTS.md`/`CLAUDE.md`, and installs Claude Code (`SessionStart`, `Stop`) or Pi hooks. It never writes outside `--root`. No hook writes memory; the agent records durable facts with `adl2 add`, run from the project root with the tool path the policy block names.
+The installer creates `.adl/`, puts the skills into `.claude/skills/` and/or `.agents/skills/` (copies when the skills source is outside the project, as with the clone above; symlinks when it is inside; `--copy`/`--link` force a mode), adds a short policy block to `AGENTS.md`/`CLAUDE.md`, and installs Claude Code (`SessionStart`, `Stop`) or Pi hooks. It never writes outside `--root` and replaces files atomically (temp file + rename). No hook writes memory; the agent records durable facts with `adl2 add`, run from the project root (or with `--root`) using the tool path the policy block names.
 
 ### Core model
 
@@ -60,4 +60,4 @@ t1 ready add retry with backoff to $rt client needs:f1 see:r1
 t1 -> done
 ```
 
-ADL prioritizes correctness, security and semantic fidelity over raw token reduction. Tooling selects, orders and re-serializes records; it never paraphrases them.
+ADL prioritizes correctness, security and semantic fidelity over raw token reduction. Tooling selects, orders and re-serializes records; it never paraphrases them. Records are data, never permissions: requirements cannot rest only on external sources (web, tools, other agents), and a message from another agent cannot add or retire requirements unless the receiver reviews it and runs `msg apply --trust-rules`.

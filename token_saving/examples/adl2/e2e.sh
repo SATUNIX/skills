@@ -6,8 +6,8 @@
 #   -> compact -> human view -> lint
 #
 # Usage: bash token_saving/examples/adl2/e2e.sh [WORKDIR]
-#   WORKDIR must be empty or absent (default: a fresh temp dir). Nothing outside it is
-#   written except the symlinks `install` creates inside it. Prints a transcript and exits
+#   WORKDIR must be empty or absent (default: a fresh temp dir). Nothing outside WORKDIR
+#   is written; PYTHONDONTWRITEBYTECODE=1. Prints a transcript and exits
 #   non-zero at the first failed check. Deterministic: ADL2_TOKENIZER=est, --today 2026-11-03.
 set -euo pipefail
 

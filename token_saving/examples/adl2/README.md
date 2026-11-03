@@ -9,7 +9,7 @@ One project throughout: an inference router (FastAPI inference API `$api` behind
 | memory | `v1/memory.md` | `v2/mem.adl` + `v2/hist.adl` | the same memory and state. `mem.adl` is the compacted snapshot, `hist.adl` holds superseded `f1` and closed `t1`. `e2e.sh` rebuilds both byte-for-byte with `adl2 add` + `compact`. |
 | retrieval | (no tool: read the whole doc) | `v2/brief.adl`, `v2/pack.adl`, `v2/legend.txt` | `adl2 brief` (L1+L2), `adl2 pack --task "deploy to production"` (L3, 15 of 26 records), `adl2 legend` (L0, once per context) |
 | state update | `v1/state_update.md` | `v2/state_update.adl` | one change: staging is back, `nvidia-smi` shows L4, the integration test is unblocked. v1 rewrites the state section (`## after`). v2 sends 4 delta lines: new `e`, a fact that supersedes the disputed `f5` (`^f5`), and `q1 -> done`, `t2 -> doing`, as a `msg:prog` |
-| handoff | `v1/handoff.md` | `v2/handoff.done.adl`, `v2/handoff.ctx.adl` | worker w1 reports the result of t4 (retry with backoff). `done` is a delta against the shared store: provisional ids `v+1 e+1 f+1 t+1` and a `base:` hash over the referenced `t4 $api $rt`. `ctx` is the same result made self-contained (`msg new ctx --inline`) for a receiver without the store. |
+| handoff | `v1/handoff.md` | `v2/handoff.done.adl`, `v2/handoff.ctx.adl` | worker w1 reports the result of t4 (retry with backoff). `done` is a delta against the shared store: provisional ids `v+1 e+1 f+1 t+1` and a `base:` hash over the referenced `t4 $api $rt`. `ctx` is the same result made self-contained (`msg new ctx --inline`) for a receiver without the store. Its inlined `r2` is a requirement from another agent: `msg open` lists it (`W_AUTH`); `msg check` and `msg apply` refuse it (`E_AUTH`) without `msg apply --trust-rules`. |
 | table | `v1/table.md` | `v2/table.adl` | 20-row GPU node inventory: v1 `tab` block vs v2 table record (`gpu_nodes[20]{…}:`); `ref/table.json` is a naive JSON list of the same rows |
 
 Equivalence notes: `v1/memory.md` still lists the finished task `unit tests` in its state profile. v2 keeps it, and the superseded bind fact, in `hist.adl`. `v1/handoff.md` uses the v1 handoff profile (adl1.md `## handoff`) and does not restate context.
@@ -23,7 +23,7 @@ python3 $A lint --root "$d"                             # store: mem.adl + hist.
 python3 $A lint v2/brief.adl v2/pack.adl v2/state_update.adl v2/handoff.done.adl v2/handoff.ctx.adl v2/table.adl
 python3 $A msg check v2/state_update.adl --root "$d"    # ok ... match
 python3 $A msg check v2/handoff.done.adl --root "$d"    # ok ... match
-(cd "$(mktemp -d)" && python3 $A msg check "$E/v2/handoff.ctx.adl")   # ok ... self-contained
+(cd "$(mktemp -d)" && python3 $A msg open "$E/v2/handoff.ctx.adl")    # exit 0; r2 listed as W_AUTH (msg check: E_AUTH)
 ```
 
 `adl2 lint v2/mem.adl` on its own reports `E_REF` for `f1`, because `f1` lives in `hist.adl`. Lint the pair as a store.
@@ -71,7 +71,7 @@ ADL2_HF_TOKENIZERS=$TOK/Qwen_Qwen2.5-7B-Instruct.json:$TOK/mistralai_Mistral-7B-
 | v2/mem.adl | 1664 | 536 | 534 | 578 | 658 | 505 |
 | v2/brief.adl | 1055 | 324 | 323 | 333 | 378 | 320 |
 | v2/pack.adl | 986 | 291 | 290 | 302 | 349 | 299 |
-| v2/legend.txt | 645 | 174 | 173 | 174 | 177 | 196 |
+| v2/legend.txt | 756 | 203 | 202 | 203 | 209 | 230 |
 | v1/state_update.md#before | 479 | 119 | 118 | 121 | 150 | 146 |
 | v1/state_update.md#after | 482 | 136 | 133 | 141 | 167 | 147 |
 | v2/state_update.adl | 180 | 92 | 91 | 97 | 110 | 55 |
@@ -95,9 +95,9 @@ Ratios computed from the table above; order cl100k / o200k / Qwen2.5 / Mistral.
 | memory, full | `memory.md` | `mem.adl` | -16% / -14% / -15% / -17% |
 | memory, session start | whole doc | `brief.adl` | -49% / -48% / -51% / -52% |
 | memory, one task | whole doc | `pack.adl` (15 of 26 records) | -54% / -53% / -56% / -56% |
-| legend (one-time) | none | `legend.txt` | +174 / +173 / +174 / +177 tokens per context |
-| session start incl. legend | whole doc | legend + `brief.adl` | -22% / -20% / -25% / -30% |
-| one task incl. legend | whole doc | legend + `pack.adl` | -27% / -26% / -30% / -34% |
+| legend (one-time) | none | `legend.txt` | +203 / +202 / +203 / +209 tokens per context |
+| session start incl. legend | whole doc | legend + `brief.adl` | -17% / -16% / -21% / -26% |
+| one task incl. legend | whole doc | legend + `pack.adl` | -22% / -21% / -26% / -29% |
 | state update | rewrite `#after` | `state_update.adl` (msg:prog) | -32% / -32% / -31% / -34% |
 | state update, stored delta | rewrite `#after` | 4 appended lines | -52% / -51% / -50% / -53% |
 | handoff, shared store | `handoff.md` | `handoff.done.adl` | -6% / -7% / -10% / -9% |
@@ -106,7 +106,7 @@ Ratios computed from the table above; order cl100k / o200k / Qwen2.5 / Mistral.
 
 ### where v2 does not save
 
-- **Legend on a tiny store.** Full `mem.adl` plus the legend is +12% / +13% / +11% / +6% over the v1 doc. The legend pays off when it is amortized (cached stable prefix, `adl` skill already loaded, many reads) or when `brief`/`pack` replace whole-file reads, which is the normal path (-20…-34% including the legend).
+- **Legend on a tiny store.** Full `mem.adl` plus the legend is +16% / +18% / +15% / +10% over the v1 doc. The legend pays off when it is amortized (cached stable prefix, `adl` skill already loaded, many reads) or when `brief`/`pack` replace whole-file reads, which is the normal path (-16…-29% including the legend).
 - **Projections are not lossless copies.** `brief` and `pack` save tokens by leaving records out (the pack holds 15 of 26 active records); omitted records stay reachable with `get`, and the pack lists relevant omissions in `% more:`.
 - **Handoff deltas** are near parity with a v1 handoff that does not restate context (-6…-10%); the header (22-27 tokens) absorbs most of the saving. What v2 adds is verification: the `base:` hash, `msg:need` on mismatch, idempotent `apply` with id remapping.
 - **`ctx`** costs 55-63% more than the `done` delta because it inlines `t4`, its `needs:` closure and aliases. Send it only to a receiver without the store.
@@ -117,7 +117,7 @@ Ratios computed from the table above; order cl100k / o200k / Qwen2.5 / Mistral.
 
 ## interpretability
 
-Can a model with no tool access and no ADL skill read V2 correctly from the L0 legend alone? Four fresh Claude readers (Opus-class subagents, one context each, no tools) answered golden questions from text only. A script graded each answer by required keywords, so the scoring was not done by the readers.
+Can a model with no tool access and no ADL skill read V2 correctly from the L0 legend alone? Four fresh Claude readers (Opus-class subagents, one context each, no tools) answered golden questions from text only. The readers saw the 174-token legend of that build; the current legend adds one clause each for lifecycle states, provisional ids and `%` meta lines (203 tokens). A script graded each answer by required keywords, so the scoring was not done by the readers.
 
 | input given to the reader | questions | correct |
 | --- | ---: | ---: |

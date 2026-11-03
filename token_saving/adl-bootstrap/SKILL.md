@@ -31,7 +31,7 @@ Steps (idempotent; every step is planned and validated before anything is writte
 
 Detection with `--harness auto`: `.claude/` or `CLAUDE.md` -> `claude`; `.pi/` -> `pi`; `.agents/` or `AGENTS.md` -> `agents`; none -> `agents`.
 
-Install never writes outside `--root`: every target is resolved (realpath) first; one that resolves outside the project (a symlinked `CLAUDE.md` or `.claude/`) is left untouched and reported in `next:`.
+Install never writes outside `--root`: every target is resolved (realpath) first; one that resolves outside the project (a symlinked `CLAUDE.md` or `.claude/`) is left untouched and reported in `next:`. Files are written to a temporary file and moved into place (`os.replace`), so a hardlinked target is replaced, never written through. The tool writes no bytecode (`__pycache__`) into the skill directories.
 
 Symlinks (`--link`, or a skills source inside the project) point at the skills source; keep it in place. In copy mode, re-running install refreshes copies that differ from the source.
 
@@ -46,7 +46,7 @@ Symlinks (`--link`, or a skills source inside the project) point at the skills s
 
 - Tool path written into the policy block and manifest: `.claude/skills/adl/scripts/adl2.py` when Claude Code is a target, else `.agents/skills/adl/scripts/adl2.py`.
 - Pi loads project extensions only after the project is trusted (`/trust`), and loads one context file per directory, preferring `AGENTS.md`; move `CLAUDE.md` instructions Pi needs into `AGENTS.md`. Install reports both in `next:`.
-- No hook writes memory content. Hooks only read `.adl/` and write `.adl/cache/`; a hook never fails the session.
+- No hook writes memory content. Hooks only read `.adl/` and write `.adl/cache/` (never a `.adl/cache/` that resolves outside the store root); a hook never fails the session.
 - Adapters for other harnesses stay thin; harness behavior never forks ADL semantics.
 
 ## manifest
@@ -97,9 +97,11 @@ adl2 migrate notes/state.md                       # print the converted @adl2 me
 adl2 migrate notes/state.md --into .adl/mem.adl   # one validated add into the store
 ```
 
-- Maps v1 attrs and sections to v2 (table: `adl2 spec compat`); payload text is copied verbatim. Highlights: `depends=` -> `needs:`, `ref=`/`artifact=` -> `see:`; `step:`/`pre:`/`check:`/`rollback:` -> continuation lines of the `p` record; a `tab` block -> one table record; indented lines join the unit they continue; with 2+ distinct headings each unit gets `#<heading-slug>`; other in-file v1 ids are rewritten to the new ids.
+- Maps v1 attrs and sections to v2 (table: `adl2 spec compat`); payload text is copied verbatim. Highlights: `depends=` -> `needs:`, `ref=`/`artifact=` -> `see:`; `step:`/`pre:`/`check:`/`rollback:` -> continuation lines of the `p` record; a `tab` block -> one table record; lines indented deeper than their unit join it, and indented sub-bullets (`- x`, `1. x`) stay with their entry (body text, or `p` continuation lines); other in-file v1 ids are rewritten to the new ids.
+- Headings name the subject: each unit gets `#<path-slug>` of its heading path (`# staging` + `## database` -> `#staging-database`). A document title (the only level-1 heading, on the first line) is ignored with a warning.
 - Epistemic spellings are normalized (`Assumed.` -> `assumed:`); an unknown value fails the check instead of silently reading as observed.
-- Every run, `--check` included, validates the converted lines with `add` against the target (empty store, or the `--into` store) and checks each number, unit, modal, negation and epistemic term against the line actually stored; on an error or a loss nothing is written (exit 2).
+- Every run, `--check` included, validates the converted lines with `add` against the target (empty store, or the `--into` store) and checks each number, unit, modal, negation, epistemic term and heading tag against the line actually stored; on an error or a loss nothing is written (exit 2).
+- A claim split across lines is a loss: a unit ending on a dangling modal, negation or function word (`router MUST` + `NOT retry POST` on the next unindented line). Indent the continuation line to join it.
 - A `% v1map <file> m7=f1 …` comment maps v1 ids to new ids.
 - Re-running `--into` reports `=dup` and adds nothing. The v1 file is only read.
 

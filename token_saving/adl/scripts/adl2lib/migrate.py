@@ -32,6 +32,8 @@ V1_REF_RE = re.compile(r"^[rifdakqem]\d+$")
 V1_TEXT_ID_RE = re.compile(r"(?<![\w+$.:/-])([rifdakqem]\d+)(?![\w+]|\.\w)")
 SECTION_RE = re.compile(r"^([a-z][a-z_]*):\s*(.*)$")
 HEADING_RE = re.compile(r"^#{1,6}(\s|$)")
+# An indented list marker under a unit: a sub-item of that unit (`- x`, `1. x`, `1) x`, `1: x`).
+SUB_RE = re.compile(r"^(?:-|\d+[.):])(?:\s|$)")
 # `key=value` attr; spaces around '=' allowed (`key = value`), `==` is not an assignment.
 ATTR_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)\s*=(?!=)\s*(.*)$")
 V1_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")  # lower_snake_case (adl1 ## syntax)
@@ -59,6 +61,13 @@ MAPPED_KEYS = ("epistemic", "basis", "supersedes", "why", "reason", "cause", "re
                "observed_at", "valid_until", "ref", "artifact", "verify", "state", "depends")
 EPISTEMIC = ("observed",) + core.MARKS
 MAX_PASSES = 4  # prepare_add runs until in-file ids rewritten into body text are stable
+# A unit whose text ends with one of these words while the next line starts a new unit is a
+# claim split across lines (`m1: router MUST` + `NOT retry POST`): a loss, never fidelity 100%.
+DANGLING_WORDS = frozenset("MUST SHOULD MAY NOT must should not no without on the a an to of and or".split())
+# ... except `on`/`no` used as a value: `cache is on`, `approved: no`.
+VALUE_WORDS = frozenset("on no".split())
+COPULAS = frozenset("is are was were be been being stays stay remains remain turned switched left kept "
+                    "set still now always".split())
 
 # Critical tokens (### migration `--check`): numbers with attached units, BCP14 modals,
 # negations, unknown, permission words, epistemic values ('observed' -> no mark: exempt).
@@ -83,16 +92,22 @@ class Unit:
     entry text after the id/marker/field prefix (a proc unit keeps its whole line; indented
     continuation lines are space-joined into it). `segments` are its plain `;`-separated
     parts and `attrs` its `(key, value, raw segment)` parts, in order (table and proc text is
-    verbatim: no splitting). `rows` are a table's CSV rows. `block` counts Markdown headings
-    (state fields of different blocks never merge); `heading` indexes the nearest heading and
-    `tag` is its slug when the file has 2+ distinct headings. convert() sets `target`
-    (provisional v2 id) or `problem`, and appends to `warnings`.
+    verbatim: no splitting). `subs` are its indented sub-items (`- x`, `1. x`), verbatim, each
+    with the lazily wrapped lines under it: body text of the record, or continuation lines
+    of a `p` record. `rows` are a table's CSV rows. `indent` is the unit line's indentation
+    (a deeper line continues the unit), `endline` its last physical line, and `split`
+    (dangling word, next line) marks a claim that ends mid-sentence where the next line
+    starts a new unit. `block` counts Markdown headings (state fields of different blocks
+    never merge); `heading` is the heading path below the document title (a tuple, empty
+    when none) and `tag` its slug. convert() sets `target` (provisional v2 id) or `problem`,
+    and appends to `warnings`.
     """
 
     __slots__ = ("lineno", "block", "heading", "section", "form", "v1id", "src", "segments",
-                 "attrs", "rows", "problem", "target", "warnings", "tag", "textids")
+                 "attrs", "rows", "problem", "target", "warnings", "tag", "textids", "subs",
+                 "indent", "endline", "split")
 
-    def __init__(self, lineno, block, section, form, src, v1id=None, heading=None):
+    def __init__(self, lineno, block, section, form, src, v1id=None, heading=(), indent=0):
         self.lineno = lineno
         self.block = block
         self.heading = heading
@@ -101,6 +116,10 @@ class Unit:
         self.v1id = v1id
         self.src = src
         self.rows = []
+        self.subs = []
+        self.indent = indent
+        self.endline = lineno
+        self.split = None
         self.target = None
         self.warnings = []
         self.tag = None
@@ -124,14 +143,28 @@ class Unit:
         self.src = ("%s %s" % (self.src, text)).strip()
         self._derive()
 
+    def add_sub(self, text: str, wrapped: bool):
+        """An indented sub-item (`wrapped`: a lazily wrapped line under the last sub-item)."""
+        if wrapped:
+            self.subs[-1] = "%s %s" % (self.subs[-1], text)
+        else:
+            self.subs.append(text)
+
+    @property
+    def tail(self) -> str:
+        """The unit's last physical text (where a claim split across lines would dangle)."""
+        if self.form == "table":
+            return ""
+        return self.subs[-1] if self.subs else self.src
+
     @property
     def text(self) -> str:
         return " ; ".join(self.segments)
 
     @property
     def full_text(self) -> str:
-        """Fidelity input: everything the unit states (a table includes its rows)."""
-        return "\n".join([self.src] + self.rows)
+        """Fidelity input: everything the unit states (sub-items, a table's rows)."""
+        return "\n".join([self.src] + self.subs + self.rows)
 
     @property
     def label(self) -> str:
@@ -183,15 +216,13 @@ def _slug(text: str) -> str:
     return s if "a" <= s[0] <= "z" else "s-" + s
 
 
-def _heading_tags(headings: list) -> dict:
-    """heading text -> tag for files with 2+ distinct headings (else {}). Distinct headings
-    always get distinct tags (`-2`, `-3` suffixes in order of first appearance)."""
-    distinct = list(dict.fromkeys(headings))
-    if len(distinct) < 2:
-        return {}
+def _heading_tags(paths: list) -> dict:
+    """heading path (tuple below the document title) -> tag: the slug of the whole path
+    (`# staging` + `## database` -> `staging-database`). Distinct paths always get distinct
+    tags (`-2`, `-3` suffixes in order of first appearance); the empty path gets none."""
     out, used = {}, set()
-    for h in distinct:
-        base = _slug(h)
+    for h in dict.fromkeys(x for x in paths if x):
+        base = _slug(" ".join(h))
         tag, n = base, 1
         while tag in used:
             n += 1
@@ -201,16 +232,64 @@ def _heading_tags(headings: list) -> dict:
     return out
 
 
+def _heading(s: str) -> tuple:
+    """(level, text) of an ATX heading line (closing `#`s dropped)."""
+    level = len(s) - len(s.lstrip("#"))
+    return level, re.sub(r"(?:^|\s+)#+\s*$", "", s[level:].strip()).strip()
+
+
+def _title_index(lines: list):
+    """Index of the document title: a level-1 heading that is the first non-blank line and
+    the only level-1 heading in the file; else None (every heading is then a subject)."""
+    first = next((i for i, l in enumerate(lines) if l.strip()), None)
+    level1 = [i for i, l in enumerate(lines) if HEADING_RE.match(l.strip()) and _heading(l.strip())[0] == 1]
+    return first if level1 == [first] else None
+
+
+def _dangling(text: str):
+    """The word a unit's text dangles on (`router MUST`, `deploy runs on the`), else None."""
+    toks = text.split()
+    if len(toks) < 2:  # a lone word (`m1: a`) is a placeholder, not a broken sentence
+        return None
+    word = toks[-1].rstrip(",")
+    if word not in DANGLING_WORDS:
+        return None
+    if word in VALUE_WORDS and (toks[-2].lower() in COPULAS or toks[-2][-1:] in (":", "=")):
+        return None  # a value: `cache is on`, `approved: no`
+    return word
+
+
+def _indent(raw: str) -> int:
+    t = raw.expandtabs(4)
+    return len(t) - len(t.lstrip())
+
+
+class V1Units(list):
+    """parse_v1 result: the units, plus `notes` [(lineno, warning)] about the file itself."""
+
+    def __init__(self, units=(), notes=()):
+        super().__init__(units)
+        self.notes = list(notes)
+
+
 def parse_v1(text: str, path: str = "") -> list:
     """Split v1 memory/state/handoff text into units (adl1 ## syntax).
 
-    Headings and blank lines are non-semantic (a heading names the subject: with 2+
-    distinct headings every unit is tagged with its nearest heading's slug). A line `name:`
-    sets the section; a known `name: value` also carries one entry; an `mN:` line ends a
-    procedure block (step:/pre:/check:/rollback:). An indented line that is not a list
-    item, id or section continues the previous unit. `tab <name> <cols>` plus the following
-    CSV rows is one table unit. Lines that map to nothing become 'bad' units so that
-    fidelity() reports them instead of dropping them silently.
+    Headings and blank lines are non-semantic, except that a heading names the subject: a
+    unit's heading path below the document title (`# staging` + `## database`) is its
+    subject, tagged `#<slug of the path>`; different paths are different subjects. The
+    document title is a single level-1 heading that is the first non-blank line and the
+    only level-1 heading; it is dropped (noted in `notes`). A line `name:` sets the section;
+    a known `name: value` also carries one entry; an `mN:` line ends a procedure block
+    (step:/pre:/check:/rollback:). A line indented deeper than the unit before it continues
+    that unit: an indented list item (`- x`, `1. x`) is a sub-item of it (lazily wrapped
+    lines under a sub-item join that sub-item), other lines are wrapped text, and an
+    indented `word:` there is text, not a section (except step:/pre:/check:/rollback: under
+    a procedure). An indented `mN:` is its own unit; a uniformly indented file parses as if
+    it were not indented. `tab <name> <cols>` plus the following CSV rows is one
+    table unit. Lines that map to nothing become 'bad' units so that fidelity() reports them
+    instead of dropping them silently. A unit whose text ends with a dangling word (MUST,
+    NOT, to, the, ...) right before a line that starts a new unit gets `split` (a loss).
     """
     lines = text.splitlines()
     first = lines[0].split()[:1] if lines else []
@@ -219,9 +298,12 @@ def parse_v1(text: str, path: str = "") -> list:
         if int(m.group(1)) == core.MAJOR:
             raise AdlError("E_SYNTAX", "already v2 (line 1 is an @adl2 header); migrate converts ADL v1 text", 1, path)
         raise AdlError("E_VERSION", "line 1 is an ADL v%s header, not ADL v1 text" % m.group(1), 1, path)
-    units, seen, headings = [], {}, []
-    # outer: the last non-procedure section; an `mN:` line ends a step:/pre:/... block
-    st = {"section": None, "outer": None, "block": 0, "heading": None, "last": None, "table": None}
+    units, seen = V1Units(), {}
+    title = _title_index(lines)
+    # outer: the last non-procedure section; an `mN:` line ends a step:/pre:/... block.
+    # last: the unit that indented lines continue; prev: the unit created most recently.
+    st = {"section": None, "outer": None, "block": 0, "heading": (), "stack": [], "last": None,
+          "prev": None, "table": None}
 
     def classify(s):
         """(is_item, entry, id match, section match, is section line)"""
@@ -232,18 +314,38 @@ def parse_v1(text: str, path: str = "") -> list:
         is_sec = bool(sec) and (not sec.group(2) or sec.group(1) in KNOWN_SECTIONS)
         return is_item, entry, idm, sec, is_sec
 
-    def new_unit(no, form, src, v1id=None):
-        return Unit(no, st["block"], st["section"], form, src, v1id, st["heading"])
+    def new_unit(no, form, src, v1id=None, indent=0):
+        prev = st["prev"]
+        if prev is not None and prev.endline == no - 1 and prev.split is None:
+            word = _dangling(prev.tail)
+            if word:
+                prev.split = (word, no)
+        u = Unit(no, st["block"], st["section"], form, src, v1id, st["heading"], indent)
+        st["prev"] = u
+        return u
+
+    def opens_proc(u):
+        return u is not None and (u.form == "proc" or (u.form in ("id", "item") and _kind(u)[0] == "p"))
 
     def entry_line(no, raw, s):
         is_item, entry, idm, sec, is_sec = classify(s)
-        if raw[:1] in (" ", "\t") and st["last"] is not None and not (is_item or idm or is_sec):
-            st["last"].extend(s)  # wrapped line: negations/modals stay with their predicate
+        w, last = _indent(raw), st["last"]
+        # A line indented deeper than the unit above continues it; an indented `word:` there
+        # is text, not a section (except a procedure's step:/pre:/check:/rollback: block).
+        proc_block = is_sec and sec.group(1) in PROC_SECTIONS and opens_proc(last)
+        if w and last is not None and w > last.indent and not (idm or proc_block):
+            if last.form != "proc" and SUB_RE.match(s):
+                last.add_sub(s, wrapped=False)  # sub-item: belongs to the unit above
+            elif last.subs:
+                last.add_sub(s, wrapped=True)  # lazily wrapped line of the last sub-item
+            else:
+                last.extend(s)  # wrapped line: negations/modals stay with their predicate
+            last.endline = no
             return
         if idm:
             if st["section"] in PROC_SECTIONS:
                 st["section"] = st["outer"]
-            u = new_unit(no, "id", idm.group(3), idm.group(1) + idm.group(2))
+            u = new_unit(no, "id", idm.group(3), idm.group(1) + idm.group(2), w)
             if u.v1id in seen:
                 raise AdlError("E_DUPID", "v1 id %s already defined on line %d" % (u.v1id, seen[u.v1id]), no, path)
             seen[u.v1id] = no
@@ -255,12 +357,12 @@ def parse_v1(text: str, path: str = "") -> list:
                 st["last"] = None
                 return
             form = _form(st["section"])
-            u = new_unit(no, form, sec.group(2))
+            u = new_unit(no, form, sec.group(2), indent=w)
         else:
             if not entry:
                 return
             form = _form(st["section"])
-            u = new_unit(no, form, s if form == "proc" else entry)
+            u = new_unit(no, form, s if form == "proc" else entry, indent=w)
         units.append(u)
         st["last"] = u
 
@@ -269,8 +371,10 @@ def parse_v1(text: str, path: str = "") -> list:
         if t is None:
             return
         if not t.rows:  # `tab x y` without rows is ordinary text
+            st["prev"] = None  # adjacency was checked when the tab line was read
             entry_line(t.lineno, t.src, t.src)
             return
+        t.endline = t.lineno + len(t.rows)
         cols = len(t.src.split()[2].split(","))
         for i, r in enumerate(t.rows):
             if _csv_fields(r) != cols:
@@ -289,9 +393,17 @@ def parse_v1(text: str, path: str = "") -> list:
         if not s:
             continue
         if HEADING_RE.match(s):
+            level, htext = _heading(s)
             st["block"] += 1
-            st["heading"] = len(headings)
-            headings.append(s.lstrip("#").strip())
+            stack = st["stack"]
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            if no - 1 == title:
+                units.notes.append((no, "heading '%s' is the document title (the only level-1 heading, on the "
+                                        "first line): dropped, not stored as a subject tag" % s))
+            else:
+                stack.append((level, htext))
+            st["heading"] = tuple(h for _, h in stack)
             st["last"] = None
             continue
         if TAB_RE.match(s):
@@ -300,11 +412,9 @@ def parse_v1(text: str, path: str = "") -> list:
             continue
         entry_line(no, raw, s)
     flush_table()
-    tags = _heading_tags(headings)
-    if tags:
-        for u in units:
-            if u.heading is not None:
-                u.tag = tags[headings[u.heading]]
+    tags = _heading_tags([u.heading for u in units])
+    for u in units:
+        u.tag = tags.get(u.heading)
     return units
 
 
@@ -568,9 +678,13 @@ def _build(p: _Plan, by_v1: dict, final=None):
             ln.status = _norm_word(val)
         else:
             extra.append(_rewrite_ids(u, raw, by_v1, final))
+    # sub-items: continuation lines of a procedure, else body text after the unit's text
+    subs = [x for u in p.units for x in u.subs]
     try:
-        ln.body = _quote(" ".join(_body(p) + extra), lead=p.kind not in core.STATUS_KINDS)
-        cont = list(lead.rows) + [_proc_line(u) for u in p.units[1:] if u.form == "proc"]
+        body = _body(p) + ([] if p.kind == "p" else subs)
+        ln.body = _quote(" ".join(body + extra), lead=p.kind not in core.STATUS_KINDS)
+        cont = list(lead.rows) + (subs if p.kind == "p" else []) + [
+            _proc_line(u) for u in p.units[1:] if u.form == "proc"]
         ln.cont = [_quote_cont(c) for c in cont]
         for k in core.TEXT_KEYS:
             if k in ln.kv:
@@ -708,6 +822,8 @@ def _unit_losses(u: Unit, where: str, raw: str) -> list:
     except AdlError as e:
         return ["%s: v2 record does not parse: %s %s" % (where, e.code, e.msg)]
     out = []
+    if u.tag and u.tag not in ln.tags:
+        out.append("%s: subject #%s (heading %s) is not on the record" % (where, u.tag, " > ".join(u.heading)))
     lost = critical_tokens(u.full_text) - critical_tokens(raw)
     if lost:
         out.append("%s: lost %s" % (where, ", ".join("'%s'" % t for t in sorted(lost.elements()))))
@@ -719,13 +835,24 @@ def _unit_losses(u: Unit, where: str, raw: str) -> list:
     return out
 
 
+def _split_loss(u: Unit, where: str) -> list:
+    """A claim split across lines (`m1: router MUST` + `NOT retry POST` on the next line)
+    is two records that each state something v1 did not: always a loss."""
+    if u.split is None:
+        return []
+    word, nxt = u.split
+    return ["%s split claim: text ends with '%s' and line %d starts a new unit "
+            "(indent the continuation line to join it)" % (where, word, nxt)]
+
+
 def fidelity(units, v2_lines) -> list:
     """Loss descriptions ('<v1 line>: ...'); empty when every unit is preserved.
 
     `v2_lines` are keyed by their leading id (convert() output: provisional ids). Each
     unit's critical multiset must be contained in its v2 line's (a mark counts as its
-    word), and an explicit epistemic state must equal the v2 mark (## marks). An
-    unconverted unit is a loss. cmd_migrate checks the lines actually stored instead
+    word), an explicit epistemic state must equal the v2 mark (## marks), and a unit under
+    a subject heading keeps its tag. An unconverted unit and a claim split across lines
+    (Unit.split) are losses. cmd_migrate checks the lines actually stored instead
     (_stored_losses).
     """
     by_id = {}
@@ -734,6 +861,7 @@ def fidelity(units, v2_lines) -> list:
     losses = []
     for u in units:
         where = "%d: %s" % (u.lineno, u.label)
+        losses += _split_loss(u, where)
         if u.target is None:
             losses.append("%s not converted: %s" % (where, u.problem or "no v2 record"))
             continue
@@ -801,6 +929,7 @@ def _stored_losses(units, out: _Outcome) -> list:
     losses, differs = [], {}
     for u in units:
         where = "%d: %s" % (u.lineno, u.label)
+        losses += _split_loss(u, where)
         if u.target is None:
             losses.append("%s not converted: %s" % (where, u.problem or "no v2 record"))
             continue
@@ -918,6 +1047,8 @@ def _report(out: _Outcome, units, name: str, losses: list, check: bool) -> bool:
         if 0 < e.lineno <= len(phys):
             e.lineno = src.get(phys[e.lineno - 1], 0)
         e.path = name
+    for no, w in getattr(units, "notes", ()):
+        print("%s:%d: warning: %s" % (name, no, w), file=sys.stderr)
     for u in units:
         for w in u.warnings:
             print("%s:%d: warning: %s" % (name, u.lineno, w), file=sys.stderr)
@@ -946,11 +1077,16 @@ def _empty_state(today) -> store.State:
 
 
 def _check(out: _Outcome, units) -> list:
-    """Losses to report: when add rejected the batch, only units that were not converted
-    (the add errors explain the rest)."""
+    """Losses to report: when add rejected the batch, only units that were not converted and
+    claims split across lines (the add errors explain the rest)."""
     if not out.res.ok:
-        return ["%d: %s not converted: %s" % (u.lineno, u.label, u.problem or "no v2 record")
-                for u in units if u.target is None]
+        losses = []
+        for u in units:
+            where = "%d: %s" % (u.lineno, u.label)
+            losses += _split_loss(u, where)
+            if u.target is None:
+                losses.append("%s not converted: %s" % (where, u.problem or "no v2 record"))
+        return losses
     return _stored_losses(units, out)
 
 

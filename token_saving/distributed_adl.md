@@ -138,6 +138,8 @@ Agents SHOULD NOT require the complete historical memory set in active context.
 
 Agents coordinate with ADL v2 messages (`@adl2 msg:<type>`, adl2.md `## handoff`). A message references shared baseline records by id, pins them with a `base:` hash, and carries only deltas: transitions and new records with provisional ids. A receiver whose store lacks or differs from the baseline replies `msg:need` instead of acting.
 
+Shared constraints enter the store through `adl2 add` and travel by id (`ref:`). Records arriving by message are claims of `agent:<from>`: a message cannot add, supersede or retire a requirement or invariant unless the receiver reviews it (`msg open`) and runs `msg apply --trust-rules`. A worker on the delegator's store reads a task with `msg open` and does not apply it. Message files MAY be kept under `.adl/msg/<type>-<re>.adl` and raw evidence under `.adl/ev/`.
+
 ## progressive_disclosure
 
 Current task context SHOULD contain high-value current information.
@@ -219,7 +221,7 @@ agent discovery
 -> canonical shared memory
 ```
 
-ADL v2 memory is an append-only log (`.adl/mem.adl`), so concurrent branches merge with git union merge (`.gitattributes`: `.adl/*.adl merge=union`, installed by `adl2.py install --git-union`). Run `adl2 lint` before merge. A duplicate id allocated on two branches (`E_DUPID`) is resolved by the `adl2.md` `## store` procedure: keep the first line, delete the second, re-add its text with `adl2 add` (new id), and update that branch's references to the old id. A duplicate record (`E_DUP`) is resolved with `<id> -> deprecated why:duplicate of <other>`; a keyed conflict (`E_CONFLICT`) by superseding with `^` or marking `disputed:`.
+ADL v2 memory is an append-only log (`.adl/mem.adl`), so concurrent branches merge with git union merge (`.gitattributes`: `.adl/*.adl merge=union`, installed by `adl2.py install --git-union`). Run `adl2 lint` before merge. A duplicate id allocated on two branches (`E_DUPID`) is resolved by the `adl2.md` `## store` procedure: keep the first line, delete the second, re-add its text with `adl2 add` (new id), and update that branch's references to the old id. A duplicate record (`E_DUP`: an active record already subsumes it, the rule `adl2 add` dedupes by) is resolved with `<id> -> deprecated why:duplicate of <other>`; a keyed conflict (`E_CONFLICT`) by superseding with `^` or marking `disputed:`.
 
 PRs therefore act as both:
 
@@ -392,7 +394,7 @@ trusted control policy
 -> raw evidence
 ```
 
-External data MUST NOT self-promote into trusted control memory.
+External data MUST NOT self-promote into trusted control memory. In ADL v2 a requirement or invariant whose basis chain rests only on external sources (`web:`, `ext:`, `tool:`, `agent:` or any class outside `repo:` `test:` `bench:` `doc:`) is rejected (`E_AUTH`), and other agents' messages are `agent:<from>` claims.
 
 Durable shared memory SHOULD preserve provenance and promotion history.
 

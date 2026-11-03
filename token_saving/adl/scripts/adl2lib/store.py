@@ -791,7 +791,7 @@ class _DupIndex:
 
     def find(self, ln: Line):
         for n in self.idx.get(_dup_key(ln), ()):
-            if not n.active or (ln.kind in "tgq" and n.closed) or n.id in ln.sup:
+            if not n.active or (ln.kind in "tgqk" and n.closed) or n.id in ln.sup:
                 continue
             if ln.kind in core.STATUS_KINDS and n.status != ln.status:
                 continue

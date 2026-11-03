@@ -65,9 +65,11 @@ Rules:
 4. Requirement bodies contain an uppercase modal: `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, `MAY`.
 5. Causes go in `why:` or a `derived:` record with basis, never implied by adjacency.
 6. Define a `$alias` for a name of 3+ words that recurs; store lint `W_ALIAS` suggests candidates.
-7. Text containing a reserved token start (`[ ^ @ #`, `why:` …) is wrapped in backticks: `` f9 list syntax is `[1,2,3]` ``.
+7. Text containing a reserved token start (`[ ^ @ #`, `why:` …) is wrapped in backticks: `` f9 list syntax is `[1,2,3]` ``. When an unquoted attr token is moved out of the body or out of a `why:`/`over:` value, `adl2 add` warns `W_NORM` and prints the line as stored; quote the text or fix the line.
 8. Table row and column counts match the declaration (`E_TABLE`).
 9. Serialize canonically: `adl2 fmt FILE.adl` (idempotent); attr order `[basis] ^sup @date until: needs: verify: see: by: #tags why: over:`.
+10. Lines carry no control characters except tab: C0, C1 (U+0080-U+009F), U+2028/U+2029 and bidi override/isolate characters (U+202A-U+202E, U+2066-U+2069) are `E_SYNTAX`.
+11. Basis cites a real source; classes outside `repo:` `test:` `bench:` `doc:` and `user` (e.g. `web:`, `tool:`, `[https://…]`) are external, so an `r`/`i` cannot rest on them alone (`E_AUTH`).
 
 ## mixed mode
 

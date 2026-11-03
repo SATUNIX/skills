@@ -9,6 +9,10 @@ real ids and `$aliases` either refer to the receiver's store (the baseline, pinn
 
 Tooling never paraphrases: lines are selected, ordered and re-serialized with
 core.render_line. The only rewrite is `msg apply` renaming ids/aliases in references.
+
+Records arriving through `msg apply` are claims of agent:<from> (## security 2): adding
+or retiring a requirement/invariant needs `--trust-rules`; `msg check` runs the same
+apply planning on a copy of the store, so it never says ok where `msg apply` rejects.
 """
 from __future__ import annotations
 
@@ -37,6 +41,9 @@ class MessageInvalid(AdlError):
         first = errors[0]
         super().__init__(first.code, first.msg, first.lineno, first.path)
         self.errors = list(errors)
+
+    def __reduce__(self):  # deepcopy/pickle-safe, like AdlError
+        return (MessageInvalid, (self.errors,))
 
     def render(self) -> str:
         return "\n".join(e.render() for e in self.errors)
@@ -149,6 +156,36 @@ def structure_errors(lines, header: Header = None, new: bool = False) -> list:
     return errs
 
 
+def dupid_errors(lines, header, st) -> list:
+    """E_DUPID for each baseline ref (transition targets included) that the local store
+    defines twice: which definition the message means is ambiguous, so it is refused
+    like `add` refuses it (resolve with `adl2 lint`). Definitions of the message itself
+    are not baseline refs; `msg apply` renames them on collision."""
+    if st is None or not st.dupids:
+        return []
+    own, errs = defined_ids(lines), []
+    hdr = []
+    if header is not None:
+        rid = header.kv.get("re", "")
+        hdr = ([rid] if core.ID_RE.match(rid) else []) + core.split_list(header.kv.get("ref", ""))
+    for r in hdr:
+        if r in st.dupids and r not in own:
+            errs.append(AdlError("E_DUPID", "header references %s, which the local store defines twice; "
+                                 "resolve E_DUPID first (adl2 lint)" % r, 1))
+    for ln in lines:
+        if ln.typ not in CONTENT:
+            continue
+        for r in sorted(line_refs(ln), key=core.sort_key):
+            if r not in st.dupids or r in own:
+                continue
+            if ln.typ == "tr" and r == ln.id:
+                what = "transition target %s is defined twice in the local store" % r
+            else:
+                what = "%s references %s, which the local store defines twice" % (ln.id, r)
+            errs.append(AdlError("E_DUPID", what + "; resolve E_DUPID first (adl2 lint)", ln.lineno))
+    return errs
+
+
 # ---------------------------------------------------------------- add-input helpers
 
 
@@ -159,6 +196,11 @@ def _ordered(lines) -> list:
     and inlined context is in canonical kind order, but `add` resolves refs in input
     order. Transitions on one target keep their relative order. A cycle is E_REF.
     """
+    return [lines[i] for i in _order(lines)]
+
+
+def _order(lines) -> list:
+    """Indices of `lines` in _ordered order."""
     where = {ln.id: i for i, ln in enumerate(lines) if ln.typ in ("rec", "ent")}
     deps, last_tr = [], {}
     for i, ln in enumerate(lines):
@@ -178,7 +220,7 @@ def _ordered(lines) -> list:
     out = []
     while ready:
         i = heapq.heappop(ready)
-        out.append(lines[i])
+        out.append(i)
         for u in users[i]:
             left[u] -= 1
             if left[u] == 0:
@@ -262,14 +304,26 @@ def inline_closure(st, refs) -> list:
     return [st.get(r) for r in sorted(seen, key=core.sort_key)]
 
 
-def build_message(st, msgtype, body_text, frm="", to="", re="", refs=(), inline=False, warnings=None) -> str:
+def legend_lines() -> list:
+    """core.LEGEND as `%` comment lines (`msg new --legend`): a receiver without the adl
+    skill can read the message; check/open/apply treat them as comments."""
+    out = []
+    for raw in core.LEGEND.split("\n"):
+        raw = raw.strip()
+        out.append(_comment(raw[1:].strip() if raw.startswith("%") else raw))
+    return out
+
+
+def build_message(st, msgtype, body_text, frm="", to="", re="", refs=(), inline=False, warnings=None,
+                  legend=False) -> str:
     """Compose a canonical `@adl2 msg:<type>` message (spec ## handoff ### send).
 
     Body lines are validated against `st` as `add` would validate them (provisional ids
-    remapped), plus the message rules of structure_errors. With `inline` or type ctx, the
-    reference closure is inlined (creation line + latest transition per node) between
-    `% inline` and `% delta`, so base is '-'. Raises AdlError/MessageInvalid; appends
-    policy warnings to `warnings` when given. Nothing is written.
+    remapped), plus the message rules of structure_errors and dupid_errors. With `inline`
+    or type ctx, the reference closure is inlined (creation line + latest transition per
+    node) between `% inline` and `% delta`, so base is '-'. With `legend`, core.LEGEND
+    follows the header as a comment. Raises AdlError/MessageInvalid; appends policy
+    warnings to `warnings` when given. Nothing is written.
     """
     if msgtype not in core.MSG_TYPES:
         raise AdlError("E_SYNTAX", "unknown message type %r (%s)" % (msgtype, " ".join(core.MSG_TYPES)))
@@ -284,7 +338,7 @@ def build_message(st, msgtype, body_text, frm="", to="", re="", refs=(), inline=
         kv["ref"] = ",".join(refs)
     header = Header("msg:" + msgtype, kv=kv)
     lines = core.parse_lines(body_text, allow_bare=True)  # bare heads: E_SYNTAX below
-    errs = structure_errors(lines, header, new=True)
+    errs = structure_errors(lines, header, new=True) + dupid_errors(lines, header, st)
     if errs:
         raise MessageInvalid(errs)
     res = _dry_add(st, [ln for ln in lines if ln.typ in CONTENT])
@@ -303,6 +357,8 @@ def build_message(st, msgtype, body_text, frm="", to="", re="", refs=(), inline=
     if unknown:
         raise AdlError("E_REF", "message references %s, not in the local store" % ",".join(unknown))
     header.kv["base"] = base_of(doc, st)
+    if legend:
+        doc.lines = legend_lines() + doc.lines
     return core.render_doc(doc)
 
 
@@ -322,7 +378,10 @@ class CheckResult:
         self.base_actual = None  # recomputed base (None while refs are missing)
         self.need_text = ""  # msg:need reply when code == 3
         self.errors = []  # AdlError, code == 2
-        self.warnings = []  # AdlError (W_MINOR, W_INJECT, W_WIDEN)
+        self.warnings = []  # AdlError (W_MINOR, W_INJECT, W_WIDEN, W_AUTH)
+        self.plan = None  # ApplyPlan of the dry-run apply (when refs and base check out)
+        self.rules = []  # (message line, label): requirement/invariant additions/retirements
+        self.rules_refused = False  # rules present and not trusted (E_AUTH)
 
     @property
     def ok(self) -> bool:
@@ -389,13 +448,69 @@ def _check_policy(lines, st, res):
         e.msg = _TOKEN.sub(lambda m: back.get(m.group(1), m.group(1)), e.msg)
 
 
-def check_message(text: str, st, path: str = "") -> CheckResult:
+RETIRE_STATES = ("deprecated", "retracted", "cancelled", "done")
+RULE_KINDS = "ri"
+
+
+def _is_rule_id(rid: str) -> bool:
+    return bool(core.ANYID_RE.match(rid)) and rid[0] in RULE_KINDS
+
+
+def rule_changes(plan) -> list:
+    """(message line, label) for every line the planned apply would write that adds a
+    requirement/invariant (an r/i record, or any record superseding one: `d+1 ... ^r1`)
+    or retires one (an r/i transition to deprecated/retracted/cancelled/done).
+
+    Records arriving through `msg apply` are claims of agent:<from> (## security 2): the
+    sender's `[user]` is not the receiver's user. Duplicates, skipped definitions and
+    no-op transitions write nothing and are not listed."""
+    content = [ln for ln in plan.lines if ln.typ in CONTENT]
+    res = plan.res
+    acts = list(res.assigned) if res is not None and len(res.assigned) == len(content) else [None] * len(content)
+    out = []
+    for ln, a in zip(content, acts):  # one assigned entry per input line when add accepts the batch
+        act, fid = (a[2], a[1]) if a else (None, ln.id)
+        name = plan.back.get(ln.id, ln.id)
+        if ln.typ == "rec" and act in ("added", None):
+            retired = [plan.back.get(s, s) for s in ln.sup if _is_rule_id(s)]
+            if ln.kind in RULE_KINDS or retired:
+                out.append((ln.lineno, name + "".join(" ^" + s for s in retired)))
+        elif ln.typ == "tr" and act in ("transition", None) and ln.state in RETIRE_STATES and _is_rule_id(fid):
+            out.append((ln.lineno, "%s -> %s" % (name, ln.state)))
+    return out
+
+
+def _check_rules(cr: CheckResult, trust_rules: bool, path: str):
+    """W_AUTH listing the rule lines of the planned apply; E_AUTH per line unless trusted."""
+    cr.rules = rule_changes(cr.plan)
+    if not cr.rules:
+        return
+    who = cr.doc.header.kv.get("from") or "an unnamed sender"
+    cr.warnings.append(AdlError(
+        "W_AUTH", "message from %s adds or retires requirements/invariants (agent claims, not the receiver's "
+        "user): %s; `msg apply` writes them only with --trust-rules" % (
+            who, ", ".join("line %d %s" % r for r in cr.rules)), cr.rules[0][0], path))
+    if trust_rules:
+        return
+    cr.rules_refused = True
+    for no, label in cr.rules:
+        cr.errors.append(AdlError(
+            "E_AUTH", "%s: message from %s may not add or retire requirements/invariants; review and pass "
+            "--trust-rules" % (label, who), no, path))
+
+
+def check_message(text: str, st, path: str = "", trust_rules: bool = False) -> CheckResult:
     """Check a received message against the local store state `st` (None = no store).
 
     1. `@adl2` major 2 header of type msg:* (else invalid, never guessed);
-    2. message rules (structure_errors) and record policy (store.check_line_policy);
+    2. message rules (structure_errors), refs the store defines twice (dupid_errors) and
+       record policy (store.check_line_policy);
     3. every baseline ref resolves in the local store, else need missing:;
-    4. recomputed base equals the header base unless that is '-', else need conflict:base.
+    4. recomputed base equals the header base unless that is '-', else need conflict:base;
+    5. the apply it would become (plan_apply + store.prepare_add on a copy of `st`) is
+       accepted, so check never says ok where `msg apply` rejects; cr.plan keeps it;
+    6. requirement/invariant additions/retirements (rule_changes) are listed as W_AUTH
+       and refused (E_AUTH) unless `trust_rules`.
     """
     cr = CheckResult()
     try:
@@ -409,6 +524,7 @@ def check_message(text: str, st, path: str = "") -> CheckResult:
     if not doc.header.is_msg:
         cr.errors.append(AdlError("E_SYNTAX", "header type %r is not a message (msg:<type>)" % doc.header.typ, 1))
     cr.errors.extend(structure_errors(doc.lines, doc.header))
+    cr.errors.extend(dupid_errors(doc.lines, doc.header, st))
     pol = store.AddResult()
     _check_policy(doc.lines, st, pol)
     cr.errors.extend(pol.errors)
@@ -427,6 +543,21 @@ def check_message(text: str, st, path: str = "") -> CheckResult:
     if cr.missing or cr.conflict:
         cr.code = cli.EXIT_NEED
         cr.need_text = need_message(doc.header, cr.missing, cr.conflict)
+        return cr
+    try:
+        cr.plan = plan_apply(doc, st if st is not None else store.State())
+    except AdlError as e:  # e.g. a reference cycle among the message's lines
+        e.path = path
+        cr.errors.append(e)
+    else:
+        res = cr.plan.res
+        _relocate(res, cr.plan.linemap, cr.plan.back, path, cr.plan.explicit)
+        if not res.ok:
+            cr.errors.extend(res.errors)  # warnings: already reported by _check_policy
+        else:
+            _check_rules(cr, trust_rules, path)
+    if cr.errors:
+        cr.code = cli.EXIT_INVALID
     return cr
 
 
@@ -436,16 +567,19 @@ def check_message(text: str, st, path: str = "") -> CheckResult:
 class ApplyPlan:
     """Add-input for one atomic Store.add, plus what is needed to report it."""
 
-    def __init__(self, text, linemap, skipped, back, explicit=()):
+    def __init__(self, text, linemap, skipped, back, explicit=(), lines=(), res=None):
         self.text = text
         self.linemap = linemap  # add-input line -> message line
-        self.skipped = skipped  # display tokens for definitions already in the store
+        self.skipped = skipped  # display tokens for lines a store already holds (not in text)
         self.back = back  # renamed token -> id/alias as written in the message
         self.explicit = set(explicit)  # real ids written in the add-input (see _relocate)
+        self.lines = list(lines)  # add-input Lines in text order (lineno = message line)
+        self.res = res  # store.prepare_add of text on a copy of the planning state
 
     def report(self, res) -> list:
         """Display tokens: `f+1=f12` added, `f2` imported, `f2=f13` renamed, `x=dup` /
-        `x=y=dup` already present, `t3>` transition, `t3=noop` state unchanged."""
+        `x=y=dup` already present, `t3>` transition, `t3=noop` state unchanged or the
+        transition already in t3's history."""
         out = list(self.skipped)
         for tok, fid, act in res.assigned:
             if act == "transition":
@@ -568,6 +702,42 @@ def _match_defs(defs, st, index, forced, taken, top) -> tuple:
     return ren, skip
 
 
+def _match_delta(lines, order, st, index, ren, skip, inline_idx) -> tuple:
+    """Delta lines that an earlier apply of this message already wrote, whatever the
+    receiver did since (superseded, retracted, closed): re-applying adds nothing.
+
+    Visited references-first (`order`), each with references rewritten by `ren` and the
+    matches so far:
+      - a provisional record whose creation line (status included) is identical to a store
+        record's, in any state: mapped to the smallest such id and dropped (`add` dedupe
+        only sees active, open records). One that references a record this apply adds, or
+        differs in anything (e.g. carries `^x`), is not matched: it is added;
+      - a transition identical to a line in its target's history: dropped.
+    Returns (pmap, dropped): provisional id -> store id; line index -> report token.
+    """
+    pmap, dropped = {}, {}
+    full = dict(ren)  # ren + pmap
+    for i in order:
+        ln = lines[i]
+        if ln.typ == "rec" and core.PROV_RE.match(ln.id):
+            probe = _rewrite(ln, full)
+            probe.id = ln.id
+            if any(core.PROV_RE.match(r) for r in line_refs(probe)):
+                continue
+            same = [x for x in index.get(_form_key(probe), ())
+                    if x not in st.dupids and st.get(x).rec.status == probe.status]
+            if same:
+                pmap[ln.id] = full[ln.id] = same[0]
+                dropped[i] = _mapped(ln.id, same[0], True)
+        elif ln.typ == "tr" and not (ln.id in skip and i in inline_idx):
+            probe = _rewrite(ln, full)
+            n = None if probe.id in st.dupids else st.get(probe.id)
+            form = core.render_line(probe)
+            if n is not None and any(core.render_line(t) == form for t in n.trans):
+                dropped[i] = probe.id + "=noop"
+    return pmap, dropped
+
+
 def _prov_top(lines) -> dict:
     """Highest provisional number used per kind in the message."""
     top = {}
@@ -589,12 +759,16 @@ def plan_apply(doc: Doc, st) -> ApplyPlan:
     under a fresh id of the same kind (a provisional id that `add` allocates; `$name-N`
     for aliases) with every reference in the message rewritten. A definition that `add`
     then reports as a duplicate is skipped too and the decisions are recomputed, until
-    nothing changes (a fixed point: every round skips at least one more definition), so
-    applying a message twice adds nothing. Inline-section transitions follow their record
-    (dropped when it is skipped); body transitions always apply. Provisional ids are left
-    to `add`, which assigns real ids and rewrites references.
+    nothing changes (a fixed point: every round skips at least one more definition).
+    Inline-section transitions follow their record (dropped when it is skipped); delta
+    records and transitions an earlier apply of the message already wrote are dropped
+    (_match_delta), so applying a message twice adds nothing, even after the receiver
+    superseded, retracted or closed what the first apply created. Remaining provisional
+    ids are left to `add`, which assigns real ids and rewrites references. Raises
+    AdlError (E_REF) on a reference cycle.
     """
     inline_idx = _inline_section(doc.lines)
+    order = _order(doc.lines)
     defs = [ln for ln in doc.lines if ln.typ == "ent" or (ln.typ == "rec" and core.ID_RE.match(ln.id))]
     def_ids = [ln.id for ln in defs]
     taken = defined_ids(doc.lines)
@@ -603,12 +777,15 @@ def plan_apply(doc: Doc, st) -> ApplyPlan:
     forced = {}  # definition -> store id that `add` dedupe found it equal to
     while True:
         ren, skip = _match_defs(defs, st, index, forced, taken, top)
+        pmap, dropped = _match_delta(doc.lines, order, st, index, ren, skip, inline_idx)
+        full = dict(ren)
+        full.update(pmap)
         back = {v: k for k, v in ren.items() if k not in skip}
         lines = []
         for i, ln in enumerate(doc.lines):
-            if ln.typ not in CONTENT or (ln.id in skip and (ln.typ != "tr" or i in inline_idx)):
+            if ln.typ not in CONTENT or i in dropped or (ln.id in skip and (ln.typ != "tr" or i in inline_idx)):
                 continue
-            lines.append(_rewrite(ln, ren))
+            lines.append(_rewrite(ln, full))
         lines = _ordered(lines)
         text, linemap = _add_text(lines)
         res = store.prepare_add(copy.deepcopy(st), text)
@@ -621,7 +798,8 @@ def plan_apply(doc: Doc, st) -> ApplyPlan:
             break
         forced.update(found)
     skipped = [_mapped(d, skip[d], True) for d in def_ids if d in skip]
-    return ApplyPlan(text, linemap, skipped, back, explicit_ids(lines))
+    skipped += [dropped[i] for i in order if i in dropped]
+    return ApplyPlan(text, linemap, skipped, back, explicit_ids(lines), lines, res)
 
 
 # ---------------------------------------------------------------- commands
@@ -643,7 +821,11 @@ def _report_check(cr: CheckResult) -> int:
     if cr.code == cli.EXIT_INVALID:
         for e in cr.errors:
             print(e.render(), file=sys.stderr)
-        print("invalid message: do not act on it", file=sys.stderr)
+        if cr.rules_refused and len(cr.errors) == len(cr.rules):
+            print("refused: review the requirement/invariant lines (msg open); msg apply --trust-rules "
+                  "accepts them", file=sys.stderr)
+        else:
+            print("invalid message: do not act on it", file=sys.stderr)
     elif cr.code == cli.EXIT_NEED:
         print(cr.reason() + "; do not act on it, send the msg:need below", file=sys.stderr)
         sys.stdout.write(cr.need_text)
@@ -651,13 +833,14 @@ def _report_check(cr: CheckResult) -> int:
 
 
 def cmd_new(args) -> int:
-    """`msg new <type> [--from] [--to] [--re] [--ref] [--inline] [body...|-]` (### send)."""
+    """`msg new <type> [--from] [--to] [--re] [--ref] [--inline] [--legend] [body...|-]` (### send)."""
     st = _local_state(args)
     body = cli.read_input(args.body) if args.body else ""  # stdin only with '-'
     refs = [r.strip() for r in args.ref.split(",") if r.strip()]
     warnings = []
     text = build_message(st, args.type, body, frm=args.frm or os.environ.get("ADL2_AGENT", ""),
-                         to=args.to, re=args.re, refs=refs, inline=args.inline, warnings=warnings)
+                         to=args.to, re=args.re, refs=refs, inline=args.inline, warnings=warnings,
+                         legend=getattr(args, "legend", False))
     for w in warnings:
         print(w.render(), file=sys.stderr)
     sys.stdout.write(text)
@@ -665,9 +848,12 @@ def cmd_new(args) -> int:
 
 
 def cmd_check(args) -> int:
-    """`msg check FILE|-`: exit 0 ok, 3 need (msg:need printed), 2 invalid (### receive)."""
+    """`msg check FILE|-`: exit 0 ok, 3 need (msg:need printed), 2 invalid (### receive),
+    including every validation error `msg apply` would raise. Requirement/invariant additions or
+    retirements are a trust decision for the writer, not a validity question: check reports them
+    as W_AUTH and `msg apply` refuses them unless --trust-rules (## security 6)."""
     text, name = cli.read_file_arg(args.file)
-    cr = check_message(text, _local_state(args), name)
+    cr = check_message(text, _local_state(args), name, trust_rules=True)
     if _report_check(cr) == cli.EXIT_OK:
         print(cr.summary())
     return cr.code
@@ -675,9 +861,10 @@ def cmd_check(args) -> int:
 
 def resolved_ids(doc: Doc, st, refs) -> list:
     """What `msg open` prints under `% resolved` so the output reads on its own: the
-    baseline refs, their 1-hop `needs:`/basis records, and the `$alias` definitions all
-    of their current lines use (recursively through alias descriptions). Definitions the
-    message carries itself are left out. Sorted by core.sort_key (entities first)."""
+    baseline refs, their 1-hop `needs:`/basis records, the successor of every superseded
+    one (recursively, as --inline does), and the `$alias` definitions all of their current
+    lines use (recursively through alias descriptions). Definitions the message carries
+    itself are left out. Sorted by core.sort_key (entities first)."""
     own = defined_ids(doc.lines)
     ids = set()
     for r in refs:
@@ -688,6 +875,12 @@ def resolved_ids(doc: Doc, st, refs) -> list:
         for ln in n.current_lines():
             ids.update(x for x in ln.basis + ln.needs() if core.ID_RE.match(x) and st.get(x) is not None)
     ids -= own
+    todo = list(ids)
+    while todo:  # a superseded record is never shown without what replaced it
+        succ = st.get(todo.pop()).sup_by
+        if succ and succ not in ids and succ not in own and st.get(succ) is not None:
+            ids.add(succ)
+            todo.append(succ)
     todo = [a for r in ids for ln in st.get(r).current_lines() for a in ln.aliases()]
     while todo:
         a = todo.pop()
@@ -699,35 +892,51 @@ def resolved_ids(doc: Doc, st, refs) -> list:
     return sorted(ids, key=core.sort_key)
 
 
+def resolved_lines(st, ids) -> list:
+    """Rendered `% resolved` section: per id its current lines (creation + latest
+    transition: retracted/deprecated/stale read as such), preceded by
+    `% <id> superseded by <succ>` for a superseded record (its successor is in `ids`)."""
+    out = [core.render_line(_comment(RESOLVED_MARK))]
+    for r in ids:
+        n = st.get(r)
+        if n.sup_by:
+            out.append(core.render_line(_comment("%s superseded by %s" % (r, n.sup_by))))
+        out += [core.render_line(l) for l in n.current_lines()]
+    return out
+
+
 def cmd_open(args) -> int:
     """`msg open FILE|-`: check, then the message, labelled as data right after its header,
     and under `% resolved` the current lines of the baseline refs, their 1-hop needs/basis
-    records and the aliases these use (resolved_ids: a self-sufficient reconstruction)."""
+    records, successors of superseded ones and the aliases these use (resolved_ids: a
+    self-sufficient reconstruction). Opening is how rule lines get reviewed, so they are
+    listed (W_AUTH), not refused; every other check failure refuses."""
     text, name = cli.read_file_arg(args.file)
     st = _local_state(args)
-    cr = check_message(text, st, name)
+    cr = check_message(text, st, name, trust_rules=True)
     if _report_check(cr) != cli.EXIT_OK:
         return cr.code
     body = cr.doc.lines
     if not (body and body[0].typ == "cmt" and body[0].text == DATA_MARK):
         body = [_comment(DATA_MARK)] + body
-    out = [core.render_doc(Doc(cr.doc.header, body)).rstrip("\n"), core.render_line(_comment(RESOLVED_MARK))]
-    for r in resolved_ids(cr.doc, st, cr.refs):
-        out += [core.render_line(l) for l in st.get(r).current_lines()]
+    out = [core.render_doc(Doc(cr.doc.header, body)).rstrip("\n")]
+    out += resolved_lines(st, resolved_ids(cr.doc, st, cr.refs))
     sys.stdout.write("\n".join(out) + "\n")
     return cli.EXIT_OK
 
 
 def cmd_apply(args) -> int:
-    """`msg apply FILE|- [--dry-run]`: check, then append the message in one atomic `add`
-    (provisional ids remapped, inlined records imported if absent)."""
+    """`msg apply FILE|- [--dry-run] [--trust-rules]`: check, then append the message in
+    one atomic `add` (provisional ids remapped, inlined records imported if absent, what
+    an earlier apply wrote skipped). Requirement/invariant additions or retirements are
+    refused unless --trust-rules."""
     s = store.Store.open(root=args.root)
     text, name = cli.read_file_arg(args.file)
     st = s.state(args.today)
-    cr = check_message(text, st, name)
+    cr = check_message(text, st, name, trust_rules=getattr(args, "trust_rules", False))
     if _report_check(cr) != cli.EXIT_OK:
         return cr.code
-    plan = plan_apply(cr.doc, st)
+    plan = cr.plan
     suffix = " (dry-run)" if args.dry_run else ""
     if not plan.text:
         print("ok nothing to apply" + "".join(" " + t for t in plan.skipped) + suffix)

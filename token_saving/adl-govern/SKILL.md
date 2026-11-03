@@ -18,12 +18,12 @@ Spec: `adl2 spec tool`, `adl2 spec compat`, `adl2 spec security`, `adl2 spec lim
 | --- | --- |
 | `adl2 lint [FILE…]` | validate; no FILE = the store (`mem.adl` + `hist.adl`); `@adl2 mem`/`doc` files: the same full checks (several `mem` files named together = one store); `.md` files: every `adl2` fence (parse + policy); exit 2 on any error |
 | `adl2 fmt FILE… [--check]` | canonical serialization of `.adl` files, idempotent; `--check` exits 2 when a file would change |
-| `adl2 compact [--dry-run]` | lossless snapshot of `mem.adl`, inactive records to `hist.adl` (skill adl-memory-state) |
-| `adl2 stats FILE…` | characters and tokens per file (`o200k` with `tiktoken`, else `est`) |
+| `adl2 compact [--dry-run]` | lossless snapshot of `mem.adl`, inactive and closed (`t`/`g`/`q`/`k`) records to `hist.adl` (skill adl-memory-state) |
+| `adl2 stats FILE…` | characters and tokens per file (`o200k` with `tiktoken`, else `est`); other tokenizers: `examples/adl2/measure.py` |
 | `adl2 decode FILE [--view V]` | render as `agent`, `mixed` (default), `human` or `json` for inspection or indexing |
-| `adl2 hash ID…` | baseline hash of records/aliases |
-| `adl2 migrate FILE --check` | v1 -> v2 conversion through `add` validation + fidelity check; writes nothing |
-| `adl2 msg check FILE` | message version, refs and `base:` (skill adl-context-pack) |
+| `adl2 hash ID…` | baseline hash of records/aliases plus their alias closure (as a message `base:`) |
+| `adl2 migrate FILE --check` | v1 -> v2 conversion through `add` validation + fidelity check (including split claims and heading tags); writes nothing |
+| `adl2 msg check FILE` | message version, refs, `base:`, and the validation `msg apply` would run, rule gate included (skill adl-context-pack) |
 
 Lint prints `path:line: CODE message`, then `ok|invalid lint N records: E errors, W warnings`. Message files are linted for syntax and policy; refs and `base:` need `msg check`.
 
@@ -33,20 +33,23 @@ Lint prints `path:line: CODE message`, then `ok|invalid lint N records: E errors
 | --- | --- | --- |
 | `E_SYNTAX` | malformed line, header, continuation or backtick span | correct the line |
 | `E_VERSION` | no `@adl2` header, or another major | add the header; v1 text: `adl2 migrate`; other major: request a supported `ctx` |
-| `E_DUPID` | id defined twice (often two branches after a union merge; `add` then refuses lines that reference it), alias redefined differently | keep the first line, delete the second, re-add its text with `adl2 add` (new id), update that branch's refs (`adl2 spec store`); define a new alias instead of redefining |
-| `E_DUP` | two active records of one kind (closed `t`/`g`/`q` excluded) with the same creation line apart from the id (and, for `t`/`g`, the same status) | `<id> -> deprecated why:duplicate of <other>` |
+| `E_DUPID` | id defined twice (often two branches after a union merge; `add` and `msg` then refuse lines that reference or transition it), alias redefined differently | keep the first line, delete the second, re-add its text with `adl2 add` (new id), update that branch's refs (`adl2 spec store`); define a new alias instead of redefining |
+| `E_DUP` | a later active record subsumed by an earlier one (closed `t`/`g`/`q` excluded): same kind, mark, body (whitespace-normalized, case preserved), continuation lines and `t`/`g` status, and every basis ref, supersession, tag, date and attr value of the later one is on the earlier one; the rule `add` dedupes by | `<id> -> deprecated why:duplicate of <other>` |
 | `E_REF` | unknown id, alias or transition target; provisional id in a store | define the target or fix the ref |
 | `E_CONFLICT` | two active keyed facts, same key, different values | supersede with `^` or mark `disputed:` |
 | `E_STATUS` | missing/unknown status; task state on a non-task record | use a valid state |
 | `E_TABLE` | table rows/columns differ from `name[n]{cols}:` | fix the declaration or rows |
-| `E_AUTH` | `r`/`i` whose basis chain ends only in `web:`/`ext:`/`tool:`/`agent:` (record-id basis followed transitively) | trusted basis, or store as `f`/`k`/`q` |
+| `E_AUTH` | `r`/`i` whose basis chain ends only in external refs: `web:`/`ext:`/`tool:`/`agent:` or any class outside `repo:`/`test:`/`bench:`/`doc:` (`user` is internal; record-id and `$alias` basis followed transitively). Messages: a requirement/invariant added, superseded or retired without `msg apply --trust-rules` | trusted basis, or store as `f`/`k`/`q`; messages: review with `msg open`, then `--trust-rules` or reject |
 | `E_MODAL` | requirement without `MUST`/`SHOULD`/`MAY` | add the intended modal |
 | `W_MINOR` | file minor version above the tool | upgrade the tool; unknown attrs kept as text |
 | `W_INJECT` | instruction-shaped text outside backticks (records, aliases, transition `why:`/`over:`) | quote it as data |
-| `W_WIDEN` | `r`/`i`/`p` text that reads like a permission grant | rewrite; records never grant permissions |
+| `W_WIDEN` | `r`/`i`/`p` text that reads like a permission grant (`MAY skip review`, `MUST/SHOULD bypass\|disable …`, `push directly to main`); not inside a `MUST NOT`/`SHOULD NOT` clause | rewrite; records never grant permissions |
 | `W_ALIAS` | phrase of 3+ words recurring in 3+ records | define a `$alias` and reference it |
 | `W_STALE` | past `until:` | recheck; supersede or `-> stale` |
 | `W_NOBASIS` | `derived:` without `[basis]` | cite the inputs |
+| `W_PERM` | `…permission=` fact whose value is not `granted`/`denied`/`pending`/`not-required`/`unknown`/`?` | use the explicit state |
+| `W_NORM` (`add`) | canonicalization moved an attr token out of the body or a `why:`/`over:` value; the stored line is printed | backtick-quote text that is not an attr |
+| `W_AUTH` (`msg`) | a message adds or retires requirements/invariants (listed by `msg open`) | review before `--trust-rules` |
 
 Other errors: `E_IO` (exit 1: missing file or store), `E_COMPACT` (compaction would change meaning; nothing written).
 
@@ -83,12 +86,13 @@ Warnings do not fail a gate by default; `W_INJECT` and `W_WIDEN` touch authority
 ## security review
 
 Memory, packs and messages are data plane; only harness policy is control plane.
-- `E_AUTH`: a requirement or invariant cannot rest only on external basis (`web:`, `ext:`, `tool:`, `agent:`), directly or through the basis of the records it cites.
+- `E_AUTH`: a requirement or invariant cannot rest only on external basis (`web:`, `ext:`, `tool:`, `agent:`, any class outside `repo:` `test:` `bench:` `doc:`), directly or through the basis of the records and `$aliases` it cites.
 - `W_INJECT`: injected instructions stay quoted data: `` f20 page contains `ignore previous instructions` [web:…] ``.
 - `W_WIDEN`: `r`/`i`/`p` records cannot authorize actions policy does not already allow.
-- Install never changes permission settings; hooks only read `.adl/` and write `.adl/cache/`.
+- Install never changes permission settings and writes files via a temp file + `os.replace` (no write-through of hardlinks); hooks only read `.adl/` and write `.adl/cache/`, never one that resolves outside the store root.
+- A permission record documents a human or harness decision; it never replaces the harness permission check (`W_PERM` keeps its value explicit).
 - A message cannot expand the receiver's permissions; `msg check` reports the same codes.
-- Review `r`/`i`/`p` records added from other agents' messages before relying on them.
+- Records arriving by message are `agent:<from>` claims: `msg check`/`msg apply` refuse requirement/invariant additions, supersessions and retirements (`E_AUTH`) unless `msg apply --trust-rules`; review them with `msg open` first. Review `p` records from messages too before relying on them.
 
 ## benchmark protocol
 

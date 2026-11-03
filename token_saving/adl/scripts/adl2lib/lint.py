@@ -12,12 +12,15 @@ What is checked:
   E_AUTH (transitive through record basis) E_TABLE W_INJECT W_WIDEN, transitions included),
   materialization (E_DUPID, E_REF), basis/needs/see ids and aliases (E_REF), lifecycle
   states (E_STATUS), keyed conflicts (E_CONFLICT), duplicate active records (E_DUP),
-  W_NOBASIS, W_STALE, W_ALIAS, W_MINOR.
+  W_NOBASIS, W_STALE, W_ALIAS, W_MINOR, W_PERM.
 - `.adl` file with an `@adl2 mem` or `@adl2 doc` header: the same checks, within the file.
   Several `mem` files named together are one store, materialized in argument order with
   any file named hist.adl first (e.g. `lint mem.adl hist.adl`); each `doc` file is its own.
 - message and pack files: parse + policy; message refs and `base:` are checked by
   `msg check`.
+- every record line (any file): W_PERM for a keyed fact `<...>permission=<value>` whose
+  value is not an explicit permission state (## states: granted denied pending
+  not-required unknown; `key=?` also means unknown).
 - `.md` file: every fenced block whose info string is adl2: parse + policy. Blocks are
   illustrative fragments, so refs to records outside the block are not errors.
 """
@@ -42,6 +45,8 @@ EDGE_WORDS = frozenset(
     "a an the of to in on at by for from with and or as is are be was were this that it via into".split())
 # Modals and negations break phrases: an alias must never hide polarity (## semantics).
 POLARITY_WORDS = frozenset("must should may not no never without none cannot".split())
+# W_PERM (## states): permission state is one explicit value; `key=?` means unknown (## marks).
+PERMISSION_OK = frozenset(core.PERMISSION_VALUES) | {"?"}
 
 
 class _Report:
@@ -80,9 +85,25 @@ def _parse(text: str, path: str, rep: _Report, offset: int = 0, need_header: boo
     return doc
 
 
+def perm_warning(ln):
+    """W_PERM for a keyed fact whose key ends in `permission` (`$prod.deploy.permission`,
+    `permission`) and whose value does not start with an explicit permission state
+    (core.PERMISSION_VALUES, or `?`), else None. A permission is never encoded by
+    omitting a word (`permission=yes`, `permission=not required`)."""
+    kv = ln.keyed()
+    if kv is None or not kv[0].endswith("permission"):
+        return None
+    val = kv[1]
+    words = val.split()
+    if words and words[0].rstrip(".,;") in PERMISSION_OK:
+        return None
+    return AdlError("W_PERM", "%s %s=%s: permission state must be one of %s (or ?)" % (
+        ln.id, ln.body.split("=", 1)[0], val, " ".join(core.PERMISSION_VALUES)), ln.lineno)
+
+
 def _policy(doc, path: str, rep: _Report, offset: int = 0, st=None):
     """store.check_line_policy on every record/entity/transition line against `st` (the
-    materialized state: E_AUTH follows record-id basis); counts records."""
+    materialized state: E_AUTH follows record-id basis), plus W_PERM; counts records."""
     for ln in doc.lines:
         if ln.typ in ("rec", "ent", "tr"):
             if ln.typ != "tr":
@@ -91,6 +112,9 @@ def _policy(doc, path: str, rep: _Report, offset: int = 0, st=None):
             store.check_line_policy(ln, res, st)
             for e in res.errors + res.warnings:
                 rep.add(e, path, offset)
+            w = perm_warning(ln)
+            if w is not None:
+                rep.add(w, path, offset)
 
 
 def _own_state(doc, today=None):
@@ -175,7 +199,7 @@ def _semantic(st, where: dict, rep: _Report):
                     n.id, key, val, ", ".join("%s (%s)" % (o.id, o.rec.keyed()[1]) for o in others)))
     seen = {}
     for n in active:
-        if n.kind in "tgq" and n.closed:
+        if n.kind in "tgqk" and n.closed:
             continue
         k = store._dup_key(n.rec)
         dup = _dup_of(n, seen.get(k, []))
