@@ -74,8 +74,9 @@ class TestAllocation(StoreCase):
         self.add("f1 one")
         self.rejected("f1 changed text", code="E_DUPID")
 
-    def test_bare_then_explicit_same_id_rejected(self):
-        self.rejected("f one", "f1 other", code="E_DUPID")
+    def test_explicit_ids_reserved_before_bare_allocation(self):
+        # explicit ids are pre-scanned, so a bare kind letter never takes an id used later in the batch
+        self.assertEqual(self.add("f one", "f1 other")[0], "ok f2 f1\n")
 
     def test_provisional_ids(self):
         out, _ = self.add("f+1 port is 8080", "t+1 ready check port [f+1] needs:f+1", "t+1 -> doing")

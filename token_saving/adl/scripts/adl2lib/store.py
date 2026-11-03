@@ -23,6 +23,7 @@ MEM = "mem.adl"
 HIST = "hist.adl"
 MANIFEST = "manifest.toml"
 
+CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 INJECT_PATTERNS = [
     r"ignore (all |any )?(previous|prior|above) (instructions|prompts?)",
     r"disregard (the |all |previous )?(instructions|system prompt|rules)",
@@ -32,8 +33,9 @@ INJECT_PATTERNS = [
     r"new instructions?:",
     r"do not tell the user",
 ]
+MAY_RE = re.compile(r"\bMAY\b")
+MAY_VERB_RE = re.compile(r"\b(skip|bypass|disable|ignore|override)\b")
 WIDEN_PATTERNS = [
-    r"\bMAY\b.*\b(skip|bypass|disable|ignore|override)\b",
     r"\b(without|no) (review|approval|confirmation|permission)\b",
     r"\bforce[- ]push\b",
     r"\b(grant|grants|granted) (itself|yourself|agent|agents)\b",
@@ -51,11 +53,32 @@ def find_root(start=None, root=None):
     """Directory containing .adl/ (explicit root, else nearest ancestor of start/cwd)."""
     if root:
         return Path(root).resolve()
-    p = Path(start or os.getcwd()).resolve()
+    if start:
+        base = os.path.abspath(str(start))
+    else:
+        base = os.getcwd()
+        pwd = os.environ.get("PWD", "")
+        try:  # logical path: a symlinked skill dir inside the project still finds the project store
+            if pwd and os.path.isabs(pwd) and os.path.samefile(pwd, base):
+                base = pwd
+        except OSError:
+            pass
+    p = Path(os.path.normpath(base))
     for d in [p] + list(p.parents):
         if (d / ADL_DIR).is_dir():
             return d
     return None
+
+
+def read_text(path) -> str:
+    """Read without newline translation: a lone CR must reach the parser (and be rejected)."""
+    with open(str(path), encoding="utf-8", newline="") as fh:
+        return fh.read()
+
+
+def write_text(path, txt: str):
+    with open(str(path), "w", encoding="utf-8", newline="") as fh:
+        fh.write(txt)
 
 
 class Node:
@@ -115,6 +138,7 @@ class State:
         self.order = []  # ids (records and entities) in log order
         self.errors = []  # AdlError
         self.max_num = {k: 0 for k in core.KINDS}
+        self.dupids = set()  # ids defined more than once (E_DUPID): ambiguous, refs refused
         self.today = today_str()
 
     def get(self, rid):
@@ -162,6 +186,7 @@ def materialize(docs, today=None) -> State:
                     continue
                 if ln.id in st.nodes:
                     st.errors.append(AdlError("E_DUPID", "%s defined twice" % ln.id, ln.lineno, doc.path))
+                    st.dupids.add(ln.id)
                     continue
                 st.nodes[ln.id] = Node(ln, src)
                 st.order.append(ln.id)
@@ -173,6 +198,7 @@ def materialize(docs, today=None) -> State:
                 if prev is not None:
                     if core.hash_form(prev.rec) != core.hash_form(ln):
                         st.errors.append(AdlError("E_DUPID", "%s redefined differently (deprecate it and define a new alias)" % ln.id, ln.lineno, doc.path))
+                        st.dupids.add(ln.id)
                     continue
                 st.ents[ln.id] = Node(ln, src)
                 st.order.append(ln.id)
@@ -193,13 +219,19 @@ def materialize(docs, today=None) -> State:
         n = st.get(target)
         if n is None:
             st.errors.append(AdlError("E_REF", "%s supersedes unknown %s" % (ln.id, target), ln.lineno, path))
-        elif n.sup_by is None:
-            n.sup_by = ln.id
+        else:
+            _set_sup(n, ln.id)
     for n in list(st.nodes.values()) + list(st.ents.values()):
         u = n.rec.kv.get("until")
         if u and u[:10] < st.today and (n.state is None or n.state in core.OPEN_STATES):
             n.until_stale = True
     return st
+
+
+def _set_sup(n: Node, by: str):
+    """Deterministic superseder (smallest sort_key), independent of file position."""
+    if n.sup_by is None or core.sort_key(by) < core.sort_key(n.sup_by):
+        n.sup_by = by
 
 
 class Store:
@@ -208,6 +240,7 @@ class Store:
         self.dir = self.root / ADL_DIR
         self.mem = self.dir / MEM
         self.hist = self.dir / HIST
+        self._depth = 0  # lock reentrancy (flock conflicts across fds of one process)
 
     @classmethod
     def open(cls, root=None, start=None, must_exist=True) -> "Store":
@@ -227,57 +260,79 @@ class Store:
         made = []
         self.dir.mkdir(parents=True, exist_ok=True)
         if not self.mem.exists():
-            self.mem.write_text("@adl2 mem\n", encoding="utf-8")
+            write_text(self.mem, "@adl2 mem\n")
             made.append(str(self.mem))
         gi = self.dir / ".gitignore"
         if not gi.exists():
-            gi.write_text("cache/\n", encoding="utf-8")
+            write_text(gi, "cache/\n")
             made.append(str(gi))
         return made
 
     def read_doc(self, path: Path):
         if not path.exists():
             return None
-        return core.parse_doc(path.read_text(encoding="utf-8"), str(path))
+        return core.parse_doc(read_text(path), str(path))
 
     def docs(self) -> list:
-        self._recover()
-        out = []
-        h = self.read_doc(self.hist)
-        if h is not None:
-            out.append(("hist", h))
-        m = self.read_doc(self.mem)
-        if m is not None:
-            if m.header.typ != "mem":
-                raise AdlError("E_SYNTAX", "%s header type must be mem" % self.mem)
-            out.append(("mem", m))
-        return out
+        """Read hist + mem consistently: roll forward a pending compaction, then read under a shared lock."""
+        if self._marker().exists():
+            with self.lock():
+                self._recover()
+        with self.lock(shared=True):
+            out = []
+            h = self.read_doc(self.hist)
+            if h is not None:
+                out.append(("hist", h))
+            m = self.read_doc(self.mem)
+            if m is not None:
+                if m.header.typ != "mem":
+                    raise AdlError("E_SYNTAX", "%s header type must be mem" % self.mem)
+                out.append(("mem", m))
+            return out
 
     def state(self, today=None) -> State:
         return materialize(self.docs(), today)
 
     @contextlib.contextmanager
-    def lock(self):
-        self.dir.mkdir(parents=True, exist_ok=True)
-        lf = self.dir / "cache"
-        lf.mkdir(exist_ok=True)
-        fh = open(lf / "lock", "a+")
+    def lock(self, shared: bool = False):
+        """Advisory lock: exclusive for writers, shared for readers; reentrant per Store."""
+        if self._depth:
+            self._depth += 1
+            try:
+                yield
+            finally:
+                self._depth -= 1
+            return
+        fh = None
         try:
-            if fcntl is not None:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            (self.dir / "cache").mkdir(parents=True, exist_ok=True)
+            fh = open(str(self.dir / "cache" / "lock"), "a+")
+        except OSError:
+            fh = None  # read-only checkout: proceed unlocked
+        try:
+            if fh is not None and fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+            self._depth = 1
             yield
         finally:
-            if fcntl is not None:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            fh.close()
+            self._depth = 0
+            if fh is not None:
+                if fcntl is not None:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
 
     def append_lines(self, rendered: list):
-        txt = self.mem.read_text(encoding="utf-8") if self.mem.exists() else "@adl2 mem\n"
+        """Append canonical lines. Refuses anything that would not read back as the same lines."""
+        for r in rendered:
+            parts = r.split("\n")
+            if "\r" in r or any(not p.startswith("  ") for p in parts[1:]) or CTRL_RE.search(r.replace("\n", "")):
+                raise AdlError("E_SYNTAX", "refusing to write a line that would not read back identically: %r" % r[:80])
+        txt = read_text(self.mem) if self.mem.exists() else "@adl2 mem\n"
         if not txt.endswith("\n"):
             txt += "\n"
         txt += "".join(r + "\n" for r in rendered)
-        tmp = self.mem.with_suffix(".adl.tmp")
-        tmp.write_text(txt, encoding="utf-8")
+        tmp = self.mem.with_suffix(".adl.add.tmp")
+        write_text(tmp, txt)
         os.replace(str(tmp), str(self.mem))
 
     # ------------------------------------------------------------ add
@@ -318,13 +373,27 @@ class Store:
                 if n.trans:
                     mem_lines.append(n.trans[-1])
                     in_mem.add(id(n.trans[-1]))
-            hist_lines = []
+            cand = []
             for src, doc in docs:
                 for ln in doc.lines:
                     if ln.typ in ("rec", "ent", "tr") and id(ln) not in in_mem:
-                        hist_lines.append(ln)
+                        cand.append(ln)
                     elif ln.typ == "cmt" and src == "hist":
-                        hist_lines.append(ln)
+                        cand.append(ln)
+            # log order, except a record's creation line always precedes its first transition
+            cand_ids = {id(l) for l in cand}
+            hist_lines, emitted = [], set()
+            for ln in cand:
+                if ln.typ == "tr":
+                    rec = st.get(ln.id).rec
+                    if id(rec) in cand_ids and id(rec) not in emitted:
+                        hist_lines.append(rec)
+                        emitted.add(id(rec))
+                elif ln.typ in ("rec", "ent"):
+                    if id(ln) in emitted:
+                        continue
+                    emitted.add(id(ln))
+                hist_lines.append(ln)
             mem_txt = core.render_doc(core.Doc(Header("mem"), mem_lines))
             hist_txt = core.render_doc(core.Doc(Header("mem"), hist_lines))
             st2 = materialize([("hist", core.parse_doc(hist_txt, "hist")), ("mem", core.parse_doc(mem_txt, "mem"))], today)
@@ -333,7 +402,8 @@ class Store:
                 raise AdlError("E_COMPACT", "compaction would change meaning: %s" % "; ".join(diff[:5]))
             before = sum(len([l for l in d.lines if l.typ != "blank"]) for _, d in docs)
             old_hist = dict(docs).get("hist")
-            moved = len(hist_lines) - len([l for l in (old_hist.lines if old_hist else []) if l.typ != "blank"])
+            old_ids = {id(l) for l in (old_hist.lines if old_hist else [])}
+            moved = sum(1 for l in hist_lines if id(l) not in old_ids)
             info = {"mem_lines": len(mem_lines), "hist_lines": len(hist_lines), "hist_added": moved, "lines_before": before}
             if not dry_run:
                 writes = [(self.mem, mem_txt)]
@@ -348,21 +418,28 @@ class Store:
     def _swap(self, writes):
         """Two-phase replace: write temps, set marker, rename all, clear marker."""
         for path, txt in writes:
-            path.with_suffix(".adl.tmp").write_text(txt, encoding="utf-8")
+            write_text(path.with_suffix(".adl.tmp"), txt)
         self._marker().parent.mkdir(parents=True, exist_ok=True)
-        self._marker().write_text("\n".join(str(p) for p, _ in writes) + "\n", encoding="utf-8")
+        write_text(self._marker(), "\n".join(p.name for p, _ in writes) + "\n")
         self._recover()
 
     def _recover(self):
-        """Roll forward an interrupted compaction (called before every read)."""
+        """Roll forward an interrupted compaction. Caller holds the exclusive lock."""
         mk = self._marker()
-        if not mk.exists():
+        try:
+            names = read_text(mk).split()
+        except FileNotFoundError:
             return
-        for name in mk.read_text(encoding="utf-8").split():
-            tmp = Path(name).with_suffix(".adl.tmp")
-            if tmp.exists():
-                os.replace(str(tmp), name)
-        mk.unlink()
+        for name in names:
+            tmp = (self.dir / name).with_suffix(".adl.tmp")
+            try:
+                os.replace(str(tmp), str(self.dir / name))
+            except FileNotFoundError:
+                pass
+        try:
+            mk.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def compare_states(a: State, b: State) -> list:
@@ -409,29 +486,61 @@ class AddResult:
         return ("ok " + " ".join(parts)) if parts else "ok (nothing to add)"
 
 
+def external_basis(ln: Line, st: State = None, _seen=None) -> bool:
+    """True when every leaf of the basis chain is external (web:/ext:/tool:/agent:) (## security 2).
+
+    Record-id basis is followed through `st` (cycle-safe); a record without basis, an alias,
+    `user` and repository/test/bench/doc refs are not external.
+    """
+    if not ln.basis:
+        return False
+    seen = _seen if _seen is not None else set()
+    for b in ln.basis:
+        if core.is_external(b):
+            continue
+        if st is not None and core.ID_RE.match(b) and b not in seen:
+            n = st.nodes.get(b)
+            if n is not None:
+                seen.add(b)
+                if external_basis(n.rec, st, seen):
+                    continue
+        return False
+    return True
+
+
+def _table_shape(body: str):
+    """(rows, cols) for a 'name[n]{cols}:' table header, else None (linear-time)."""
+    if not body.endswith("}:"):
+        return None
+    i = body.rfind("[")
+    m = re.match(r"\[(\d+)\]\{([^{}]*)\}:$", body[i:]) if i >= 0 else None
+    return (int(m.group(1)), len(m.group(2).split(","))) if m else None
+
+
 def check_line_policy(ln: Line, res: AddResult, st: State = None):
-    """Semantic checks shared by add and lint (spec ## kinds, ## security)."""
+    """Semantic checks shared by add, lint and msg (spec ## kinds, ## security)."""
     if ln.typ == "rec":
         if ln.kind == "r" and not re.search(r"\b(MUST|SHOULD|MAY)\b", ln.body):
             res.errors.append(AdlError("E_MODAL", "%s requirement needs MUST/MUST NOT/SHOULD/SHOULD NOT/MAY" % ln.id, ln.lineno))
-        if ln.kind in "ri" and ln.basis and all(core.is_external(b) for b in ln.basis):
-            res.errors.append(AdlError("E_AUTH", "%s: requirement/invariant cannot rest only on external basis %s" % (ln.id, ",".join(ln.basis)), ln.lineno))
-        if re.match(r"^.*\[\d+\]\{[^}]*\}:$", ln.body):
-            m = re.match(r"^.*\[(\d+)\]\{([^}]*)\}:$", ln.body)
-            n, cols = int(m.group(1)), len(m.group(2).split(","))
+        if ln.kind in "ri" and external_basis(ln, st):
+            res.errors.append(AdlError("E_AUTH", "%s: requirement/invariant cannot rest only on external basis (web:/ext:/tool:/agent:) %s" % (ln.id, ",".join(ln.basis)), ln.lineno))
+        shape = _table_shape(ln.body)
+        if shape:
+            n, cols = shape
             if n != len(ln.cont) or any(len(_csv_split(r)) != cols for r in ln.cont):
                 res.errors.append(AdlError("E_TABLE", "%s: table declares %d rows x %d cols" % (ln.id, n, cols), ln.lineno))
-    if ln.typ in ("rec", "ent"):
+    if ln.typ in ("rec", "ent", "tr"):
         text = TICKLESS(" ".join([ln.body, ln.kv.get("why", ""), ln.kv.get("over", "")] + ln.cont))
         for p in INJECT_PATTERNS:
             if re.search(p, text, re.I):
                 res.warnings.append(AdlError("W_INJECT", "%s contains instruction-shaped text; quote it in backticks as data" % ln.id, ln.lineno))
                 break
         if ln.typ == "rec" and ln.kind in "rip":
-            for p in WIDEN_PATTERNS:
-                if re.search(p, text):
-                    res.warnings.append(AdlError("W_WIDEN", "%s may widen authority; records cannot grant permissions" % ln.id, ln.lineno))
-                    break
+            m = MAY_RE.search(text)
+            widen = bool(m and MAY_VERB_RE.search(text, m.end()))
+            widen = widen or any(re.search(p, text) for p in WIDEN_PATTERNS)
+            if widen:
+                res.warnings.append(AdlError("W_WIDEN", "%s may widen authority; records cannot grant permissions" % ln.id, ln.lineno))
 
 
 def TICKLESS(s: str) -> str:
@@ -469,6 +578,10 @@ def prepare_add(st: State, text: str) -> AddResult:
     pmap = {}  # provisional/explicit-token -> final id
     batch_alias = set()
     keyed = st.keyed_active()
+    dupidx = _DupIndex(st)
+    for ln in lines:  # explicit ids later in the batch must not collide with allocated ones
+        if ln.typ == "rec" and core.ID_RE.match(ln.id) and ln.id not in st.nodes:
+            st.max_num[ln.kind] = max(st.max_num[ln.kind], core.id_num(ln.id))
 
     def resolve(ref, ln):
         if core.BARE_RE.match(ref):
@@ -496,6 +609,8 @@ def prepare_add(st: State, text: str) -> AddResult:
                 continue
             if core.ID_RE.match(r) and r not in st.nodes:
                 res.errors.append(AdlError("E_REF", "%s references unknown %s" % (tok, r), ln.lineno))
+            elif r in st.dupids:
+                res.errors.append(AdlError("E_DUPID", "%s references %s, which the store defines twice; resolve E_DUPID first (adl2 lint)" % (tok, r), ln.lineno))
         for r in ln.needs():
             if not (core.ANYID_RE.match(r) or core.ALIAS_RE.match(r)):
                 res.errors.append(AdlError("E_REF", "%s needs:%s is not a record id or $alias" % (tok, r), ln.lineno))
@@ -530,12 +645,14 @@ def prepare_add(st: State, text: str) -> AddResult:
                 res.errors.append(AdlError("E_REF", "transition target %s unknown" % tok, ln.lineno))
                 continue
             check_refs(ln, tok)
-            if n.state == ln.state and not (ln.basis or ln.date or ln.kv):
+            same_last = bool(n.trans) and core.render_line(n.trans[-1]) == core.render_line(ln)
+            if n.state == ln.state and (same_last or not (ln.basis or ln.date or ln.kv)):
                 res.assigned.append((tok, ln.id, "noop"))
                 continue
             if n.kind not in core.STATUS_KINDS and ln.state in ("new", "ready", "doing", "wait", "blocked", "failed"):
                 res.errors.append(AdlError("E_STATUS", "%s: %s records take lifecycle states stale/deprecated/retracted/done/cancelled" % (ln.id, core.KIND_NAMES.get(n.kind, "entity")), ln.lineno))
                 continue
+            check_line_policy(ln, res, st)
             n.trans.append(ln)
             n.trans_src.append("mem")
             if n.kind in core.STATUS_KINDS:
@@ -552,8 +669,8 @@ def prepare_add(st: State, text: str) -> AddResult:
             continue
         remap(ln)
         kind = ln.kind
-        # dedupe against active records
-        dup = _find_dup(st, ln)
+        # dedupe against active records (exact identity, ## semantics)
+        dup = dupidx.find(ln)
         if dup is not None:
             res.assigned.append((tok, dup, "dup"))
             last_of[kind] = dup
@@ -565,7 +682,6 @@ def prepare_add(st: State, text: str) -> AddResult:
                 res.errors.append(AdlError("E_DUPID", "%s exists; records are immutable (use '%s -> state' or a new record with ^%s)" % (tok, tok, tok), ln.lineno))
                 continue
             fid = tok
-            st.max_num[kind] = max(st.max_num[kind], core.id_num(tok))
         else:
             fid = st.next_id(kind)
         ln.id = fid
@@ -593,10 +709,11 @@ def prepare_add(st: State, text: str) -> AddResult:
         st.order.append(fid)
         for s in ln.sup:
             t = st.get(s)
-            if t is not None and t.sup_by is None:
-                t.sup_by = fid
+            if t is not None:
+                _set_sup(t, fid)
         if kv:
             keyed.setdefault(kv[0], []).append(node)
+        dupidx.add(node)
         res.assigned.append((tok, fid, "added"))
         res.rendered.append(core.render_line(ln))
     if res.errors:
@@ -606,24 +723,47 @@ def prepare_add(st: State, text: str) -> AddResult:
     return res
 
 
-def _find_dup(st: State, ln: Line):
-    body = core.norm_text(ln.body)
-    for n in st.nodes.values():
-        if n.kind != ln.kind or not n.active:
-            continue
-        if ln.kind in "tgq" and n.closed:
-            continue
-        if n.id in ln.sup:  # re-verification with new basis supersedes, not duplicates
-            continue
-        r = n.rec
-        if core.norm_text(r.body) != body or r.mark != ln.mark:
-            continue
-        rk, lk = r.keyed(), ln.keyed()
-        if rk and lk and core.norm_value(rk[1]) != core.norm_value(lk[1]):
-            continue  # same text modulo case but a different exact value (10GB vs 10Gb)
-        if ln.kind in "ev" and (r.date != ln.date or r.see() != ln.see()):
-            continue
-        if [c.strip() for c in r.cont] != [c.strip() for c in ln.cont]:
-            continue
-        return n.id
-    return None
+def _dup_key(ln: Line):
+    """Body identity: kind, mark, case-preserving whitespace-normalized body, continuation lines."""
+    return (ln.kind, ln.mark, core.norm_value(ln.body), tuple(core.norm_value(c) for c in ln.cont))
+
+
+def subsumes(old: Line, new: Line) -> bool:
+    """True when `old` already states everything `new` states (## semantics dedupe).
+
+    Same body/mark/cont (via the index key), and every basis ref, supersession, tag, date and
+    attr value of `new` is present in `old`. Less detail = duplicate; any new detail = new record.
+    """
+    if not set(new.basis) <= set(old.basis) or not set(new.sup) <= set(old.sup):
+        return False
+    if not set(new.tags) <= set(old.tags) or (new.date and new.date != old.date):
+        return False
+    for k, v in new.kv.items():
+        if k in core.LIST_KEYS:
+            if not set(core.split_list(v)) <= set(core.split_list(old.kv.get(k, ""))):
+                return False
+        elif core.norm_value(old.kv.get(k, "")) != core.norm_value(v):
+            return False
+    return True
+
+
+class _DupIndex:
+    """Duplicate lookup in O(1) by body identity, then subsumption + current-state checks."""
+
+    def __init__(self, st: State):
+        self.idx = {}
+        for n in st.nodes.values():
+            self.add(n)
+
+    def add(self, n: Node):
+        self.idx.setdefault(_dup_key(n.rec), []).append(n)
+
+    def find(self, ln: Line):
+        for n in self.idx.get(_dup_key(ln), ()):
+            if not n.active or (ln.kind in "tgq" and n.closed) or n.id in ln.sup:
+                continue
+            if ln.kind in core.STATUS_KINDS and n.status != ln.status:
+                continue
+            if subsumes(n.rec, ln):
+                return n.id
+        return None

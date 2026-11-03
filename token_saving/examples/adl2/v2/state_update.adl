@@ -1,0 +1,5 @@
+@adl2 msg:prog from:w2 to:main re:t2 base:c2efd47e
+e+1 nvidia-smi on $stg nodes: 3x L4 @2026-11-03 see:.adl/ev/stg-gpu.txt
+f+1 $stg.gpu=L4 [e+1] ^f5
+q1 -> done see:e+1
+t2 -> doing

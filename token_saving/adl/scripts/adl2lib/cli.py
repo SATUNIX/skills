@@ -26,7 +26,7 @@ def read_file_arg(path: str) -> tuple:
     p = Path(path)
     if not p.exists():
         raise AdlError("E_IO", "%s not found" % path)
-    return p.read_text(encoding="utf-8"), str(p)
+    return store.read_text(p), str(p)
 
 
 def open_store(args, must_exist=True):
@@ -177,7 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("install", lazy("install", "cmd_install"), "install ADL v2 into a project (idempotent)")
     sp.add_argument("--harness", default="auto", choices=["auto", "claude", "pi", "agents", "all"])
-    sp.add_argument("--copy", action="store_true", help="copy skills instead of symlinking")
+    sp.add_argument("--copy", action="store_true", help="copy skills (default when the skill source is outside the project)")
+    sp.add_argument("--link", action="store_true", help="symlink skills (default when the skill source is inside the project)")
     sp.add_argument("--no-hooks", action="store_true")
     sp.add_argument("--git-union", action="store_true", help="add .gitattributes union merge for .adl/*.adl")
     sp.add_argument("--dry-run", action="store_true")

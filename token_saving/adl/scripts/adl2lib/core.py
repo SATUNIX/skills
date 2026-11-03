@@ -17,7 +17,7 @@ KIND_NAMES = {
     "q": "question", "e": "evidence", "v": "event", "p": "procedure", "g": "goal", "t": "task",
 }
 # Pack/compact order: stable -> volatile (spec ## retrieval step 8).
-KIND_ORDER = "idrpfevkqgt"
+KIND_ORDER = "irdpfevkqgt"
 STATUS_KINDS = "tg"
 MARKS = ("derived", "assumed", "disputed", "unknown")
 MARK_TOKENS = {m + ":": m for m in MARKS}
@@ -32,7 +32,7 @@ LIST_KEYS = ("needs", "see")
 MSG_TYPES = ("task", "prog", "done", "fail", "block", "ctx", "need")
 FILE_TYPES = ("mem", "doc", "pack")
 HEADER_KEY_ORDER = ("view", "from", "to", "re", "ref", "base", "missing", "conflict", "n", "tok")
-EXTERNAL_REF_CLASSES = ("web", "ext")
+EXTERNAL_REF_CLASSES = ("web", "ext", "tool", "agent")
 PERMISSION_VALUES = ("granted", "denied", "pending", "not-required", "unknown")
 
 ID_RE = re.compile(r"^([fdrikqevpgt])(\d+)$")
@@ -48,6 +48,7 @@ CLASSREF_RE = re.compile(r"^[a-z][a-z0-9_-]*:\S+$")
 KEYED_RE = re.compile(r"^(\$?[A-Za-z_][A-Za-z0-9_.-]*)=(.+)$")
 HEADER_RE = re.compile(r"^@adl(\d+)(?:\.(\d+))?$")
 TICK_RE = re.compile(r"`[^`]*`")
+CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 LEGEND = (
     "% ADL2 legend. line = id [mark] [status] body attrs. "
@@ -483,6 +484,9 @@ def parse_doc(text: str, path: str = "", allow_bare: bool = False, need_header: 
     lines = [l[:-1] if l.endswith("\r") else l for l in text.split("\n")]
     if lines and lines[-1] == "":
         lines.pop()
+    for no, l in enumerate(lines, 1):  # a CR or control char inside a line would split/alter it on re-read
+        if CTRL_RE.search(l):
+            raise AdlError("E_SYNTAX", "control character %r inside line (only tab allowed)" % CTRL_RE.search(l).group(0), no, path)
     start = 0
     if need_header:
         if not lines:
