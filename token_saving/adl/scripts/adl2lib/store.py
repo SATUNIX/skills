@@ -197,7 +197,7 @@ def materialize(docs, today=None) -> State:
             n.sup_by = ln.id
     for n in list(st.nodes.values()) + list(st.ents.values()):
         u = n.rec.kv.get("until")
-        if u and u[:10] < st.today and n.state is None:
+        if u and u[:10] < st.today and (n.state is None or n.state in core.OPEN_STATES):
             n.until_stale = True
     return st
 
@@ -241,6 +241,7 @@ class Store:
         return core.parse_doc(path.read_text(encoding="utf-8"), str(path))
 
     def docs(self) -> list:
+        self._recover()
         out = []
         h = self.read_doc(self.hist)
         if h is not None:
@@ -290,56 +291,78 @@ class Store:
 
     # ------------------------------------------------------------ compact
     def compact(self, today=None, dry_run: bool = False) -> dict:
+        """Snapshot mem.adl; move history to hist.adl (## store). Lossless and verified.
+
+        mem.adl  = comments, entities, then each open record (canonical order) with its latest transition.
+        hist.adl = every other record/transition line, in original log order (chronology preserved).
+        Files are swapped with a roll-forward marker so a crash cannot duplicate or lose records.
+        """
         with self.lock():
             docs = self.docs()
             st = materialize(docs, today)
             if st.errors:
                 raise st.errors[0]
-            keep, move, hist_only = [], [], []
+            keep = []
             for rid in st.order:
                 n = st.get(rid)
-                if n.src == "hist":
-                    hist_only.append(n)
-                elif rid.startswith("$") or (n.active and not (n.kind in "tgq" and n.closed)):
+                if rid.startswith("$") or (n.active and not (n.kind in "tgq" and n.closed)):
                     keep.append(n)
-                else:
-                    move.append(n)
             keep_ents = sorted([n for n in keep if n.id.startswith("$")], key=lambda n: n.id)
             keep_recs = sorted([n for n in keep if not n.id.startswith("$")], key=lambda n: core.sort_key(n.id))
-            mem_lines, hist_lines = [], []
+            mem_doc = dict(docs).get("mem")
+            mem_lines = [ln for ln in (mem_doc.lines if mem_doc else []) if ln.typ == "cmt"]
+            in_mem = set()
             for n in keep_ents + keep_recs:
                 mem_lines.append(n.rec)
+                in_mem.add(id(n.rec))
                 if n.trans:
-                    # earlier mem transitions -> hist (chronologically before the kept last one)
-                    for t, src in zip(n.trans[:-1], n.trans_src[:-1]):
-                        if src == "mem":
-                            hist_lines.append(t)
                     mem_lines.append(n.trans[-1])
-            for n in sorted(move, key=lambda n: core.sort_key(n.id)):
-                hist_lines.append(n.rec)
-                hist_lines += [t for t, src in zip(n.trans, n.trans_src) if src == "mem"]
-            for n in sorted(hist_only, key=lambda n: core.sort_key(n.id)):
-                hist_lines += [t for t, src in zip(n.trans, n.trans_src) if src == "mem"]
-            old_hist = docs[0][1] if docs and docs[0][0] == "hist" else core.Doc(Header("mem"))
-            new_hist = core.Doc(Header("mem"), list(old_hist.lines) + hist_lines)
-            new_mem = core.Doc(Header("mem"), mem_lines)
-            mem_txt = core.render_doc(new_mem)
-            hist_txt = core.render_doc(new_hist)
-            # losslessness check
+                    in_mem.add(id(n.trans[-1]))
+            hist_lines = []
+            for src, doc in docs:
+                for ln in doc.lines:
+                    if ln.typ in ("rec", "ent", "tr") and id(ln) not in in_mem:
+                        hist_lines.append(ln)
+                    elif ln.typ == "cmt" and src == "hist":
+                        hist_lines.append(ln)
+            mem_txt = core.render_doc(core.Doc(Header("mem"), mem_lines))
+            hist_txt = core.render_doc(core.Doc(Header("mem"), hist_lines))
             st2 = materialize([("hist", core.parse_doc(hist_txt, "hist")), ("mem", core.parse_doc(mem_txt, "mem"))], today)
             diff = compare_states(st, st2)
             if diff:
                 raise AdlError("E_COMPACT", "compaction would change meaning: %s" % "; ".join(diff[:5]))
-            before = sum(len(d.lines) for _, d in docs if d is not None)
-            info = {"mem_lines": len(mem_lines), "hist_added": len(hist_lines), "moved": [n.id for n in move], "lines_before": before}
+            before = sum(len([l for l in d.lines if l.typ != "blank"]) for _, d in docs)
+            old_hist = dict(docs).get("hist")
+            moved = len(hist_lines) - len([l for l in (old_hist.lines if old_hist else []) if l.typ != "blank"])
+            info = {"mem_lines": len(mem_lines), "hist_lines": len(hist_lines), "hist_added": moved, "lines_before": before}
             if not dry_run:
-                for path, txt in ((self.hist, hist_txt), (self.mem, mem_txt)):
-                    if path == self.hist and not hist_lines and not self.hist.exists():
-                        continue
-                    tmp = path.with_suffix(".adl.tmp")
-                    tmp.write_text(txt, encoding="utf-8")
-                    os.replace(str(tmp), str(path))
+                writes = [(self.mem, mem_txt)]
+                if hist_lines or self.hist.exists():
+                    writes.insert(0, (self.hist, hist_txt))
+                self._swap(writes)
             return info
+
+    def _marker(self) -> Path:
+        return self.dir / "cache" / "compact.pending"
+
+    def _swap(self, writes):
+        """Two-phase replace: write temps, set marker, rename all, clear marker."""
+        for path, txt in writes:
+            path.with_suffix(".adl.tmp").write_text(txt, encoding="utf-8")
+        self._marker().parent.mkdir(parents=True, exist_ok=True)
+        self._marker().write_text("\n".join(str(p) for p, _ in writes) + "\n", encoding="utf-8")
+        self._recover()
+
+    def _recover(self):
+        """Roll forward an interrupted compaction (called before every read)."""
+        mk = self._marker()
+        if not mk.exists():
+            return
+        for name in mk.read_text(encoding="utf-8").split():
+            tmp = Path(name).with_suffix(".adl.tmp")
+            if tmp.exists():
+                os.replace(str(tmp), name)
+        mk.unlink()
 
 
 def compare_states(a: State, b: State) -> list:
@@ -381,7 +404,9 @@ class AddResult:
                 parts.append("%s>" % fid)
             elif act == "noop":
                 parts.append("%s=noop" % fid)
-        return "ok " + " ".join(parts) if self.ok else "rejected"
+        if not self.ok:
+            return "rejected"
+        return ("ok " + " ".join(parts)) if parts else "ok (nothing to add)"
 
 
 def check_line_policy(ln: Line, res: AddResult, st: State = None):
@@ -391,7 +416,7 @@ def check_line_policy(ln: Line, res: AddResult, st: State = None):
             res.errors.append(AdlError("E_MODAL", "%s requirement needs MUST/MUST NOT/SHOULD/SHOULD NOT/MAY" % ln.id, ln.lineno))
         if ln.kind in "ri" and ln.basis and all(core.is_external(b) for b in ln.basis):
             res.errors.append(AdlError("E_AUTH", "%s: requirement/invariant cannot rest only on external basis %s" % (ln.id, ",".join(ln.basis)), ln.lineno))
-        if ln.cont and re.match(r"^.*\[\d+\]\{[^}]*\}:$", ln.body):
+        if re.match(r"^.*\[\d+\]\{[^}]*\}:$", ln.body):
             m = re.match(r"^.*\[(\d+)\]\{([^}]*)\}:$", ln.body)
             n, cols = int(m.group(1)), len(m.group(2).split(","))
             if n != len(ln.cont) or any(len(_csv_split(r)) != cols for r in ln.cont):
@@ -465,21 +490,24 @@ def prepare_add(st: State, text: str) -> AddResult:
             if k in ln.kv:
                 ln.kv[k] = ",".join(resolve(r, ln) if core.ANYID_RE.match(r) else r for r in core.split_list(ln.kv[k]))
 
-    def check_refs(ln):
+    def check_refs(ln, tok):
         for r in ln.id_refs():
             if ln.typ == "tr" and r == ln.id:
                 continue
             if core.ID_RE.match(r) and r not in st.nodes:
-                res.errors.append(AdlError("E_REF", "%s references unknown %s" % (ln.id, r), ln.lineno))
+                res.errors.append(AdlError("E_REF", "%s references unknown %s" % (tok, r), ln.lineno))
+        for r in ln.needs():
+            if not (core.ANYID_RE.match(r) or core.ALIAS_RE.match(r)):
+                res.errors.append(AdlError("E_REF", "%s needs:%s is not a record id or $alias" % (tok, r), ln.lineno))
         for a in ln.aliases():
             if a not in st.ents and a not in batch_alias:
-                res.errors.append(AdlError("E_REF", "%s uses undefined alias %s (define: '%s <description>')" % (ln.id, a, a), ln.lineno))
+                res.errors.append(AdlError("E_REF", "%s uses undefined alias %s (define: '%s <description>')" % (tok, a, a), ln.lineno))
 
     for ln in lines:
         if ln.typ in ("blank", "cmt", "head"):
             continue
         if ln.typ == "ent":
-            check_refs(ln)
+            check_refs(ln, ln.id)
             prev = st.ents.get(ln.id)
             if prev is not None:
                 if core.hash_form(prev.rec) == core.hash_form(ln):
@@ -501,8 +529,8 @@ def prepare_add(st: State, text: str) -> AddResult:
             if n is None:
                 res.errors.append(AdlError("E_REF", "transition target %s unknown" % tok, ln.lineno))
                 continue
-            check_refs(ln)
-            if n.state == ln.state:
+            check_refs(ln, tok)
+            if n.state == ln.state and not (ln.basis or ln.date or ln.kv):
                 res.assigned.append((tok, ln.id, "noop"))
                 continue
             if n.kind not in core.STATUS_KINDS and ln.state in ("new", "ready", "doing", "wait", "blocked", "failed"):
@@ -519,6 +547,9 @@ def prepare_add(st: State, text: str) -> AddResult:
             continue
         # record
         tok = ln.id
+        if core.PROV_RE.match(tok) and tok in pmap:
+            res.errors.append(AdlError("E_DUPID", "provisional %s defined twice in this batch" % tok, ln.lineno))
+            continue
         remap(ln)
         kind = ln.kind
         # dedupe against active records
@@ -540,18 +571,18 @@ def prepare_add(st: State, text: str) -> AddResult:
         ln.id = fid
         pmap[tok] = fid
         last_of[kind] = fid
-        check_refs(ln)
+        check_refs(ln, tok)
         check_line_policy(ln, res, st)
         # keyed conflicts
         kv = ln.keyed()
         if kv and ln.mark != "disputed":
             for other in keyed.get(kv[0], []):
-                if other.sup_by is not None or other.id in ln.sup:
+                if not other.active or other.id in ln.sup:
                     continue
                 if other.rec.mark == "disputed":
                     continue
                 okv = other.rec.keyed()
-                if core.norm_text(okv[1]) != core.norm_text(kv[1]):
+                if core.norm_value(okv[1]) != core.norm_value(kv[1]):
                     res.errors.append(AdlError(
                         "E_CONFLICT",
                         "%s %s=%s conflicts with active %s (%s); add ^%s to supersede or mark disputed:" % (
@@ -582,10 +613,15 @@ def _find_dup(st: State, ln: Line):
             continue
         if ln.kind in "tgq" and n.closed:
             continue
+        if n.id in ln.sup:  # re-verification with new basis supersedes, not duplicates
+            continue
         r = n.rec
         if core.norm_text(r.body) != body or r.mark != ln.mark:
             continue
-        if ln.kind == "v" and r.date != ln.date:
+        rk, lk = r.keyed(), ln.keyed()
+        if rk and lk and core.norm_value(rk[1]) != core.norm_value(lk[1]):
+            continue  # same text modulo case but a different exact value (10GB vs 10Gb)
+        if ln.kind in "ev" and (r.date != ln.date or r.see() != ln.see()):
             continue
         if [c.strip() for c in r.cont] != [c.strip() for c in ln.cont]:
             continue

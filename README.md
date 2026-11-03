@@ -10,34 +10,54 @@ Design systems agents can apply to web UIs.
 
 ## Token saving / ADL
 
-Agent Dense Language (ADL) is a dense, deterministic documentation and runtime-context protocol for AI agents.
+Agent Dense Language (ADL) is a dense, deterministic, provenance-aware record language and stdlib Python tool for agent memory, task state, context packs and agent-to-agent handoffs.
 
-Canonical specification:
+Specification:
 
-- [`token_saving/adl1.md`](token_saving/adl1.md) — ADL v1 normative design/specification.
+- [`token_saving/adl2.md`](token_saving/adl2.md) — ADL v2 canonical specification (normative).
+- [`token_saving/adl1.md`](token_saving/adl1.md) — ADL v1, legacy; v1 ADL-S prose remains valid v2 mixed mode.
+- [`token_saving/distributed_adl.md`](token_saving/distributed_adl.md) — multi-agent shared memory and coordination built on ADL v2.
+
+Tool:
+
+- [`token_saving/adl/scripts/adl2.py`](token_saving/adl/scripts/adl2.py) — Python >= 3.8, stdlib only: `add get find brief pack decode fmt lint compact hash msg migrate stats install hook legend spec`. Run `python3 token_saving/adl/scripts/adl2.py --help`.
 
 Agent Skills:
 
-- [`token_saving/adl/SKILL.md`](token_saving/adl/SKILL.md) — autonomous ADL entry point/router.
-- [`token_saving/adl-bootstrap/SKILL.md`](token_saving/adl-bootstrap/SKILL.md) — install/migrate ADL into a harness/repository; Pi-first, harness-agnostic.
-- [`token_saving/adl-author/SKILL.md`](token_saving/adl-author/SKILL.md) — create/rewrite persistent agent documentation as ADL-S.
-- [`token_saving/adl-memory-state/SKILL.md`](token_saving/adl-memory-state/SKILL.md) — durable memory, provenance, freshness, supersession, and materialized state.
-- [`token_saving/adl-context-pack/SKILL.md`](token_saving/adl-context-pack/SKILL.md) — retrieval, ADL-W compilation, tokenizer optimization, tool-manifest stability, and prefix-cache packing.
-- [`token_saving/adl-govern/SKILL.md`](token_saving/adl-govern/SKILL.md) — lint/format/doctor/bench, lexicon governance, and autonomous optimization.
+- [`token_saving/adl/SKILL.md`](token_saving/adl/SKILL.md) — autonomous ADL entry point/router; small, loaded often.
+- [`token_saving/adl-bootstrap/SKILL.md`](token_saving/adl-bootstrap/SKILL.md) — install, upgrade and v1 migration; Claude Code, Pi, Agent Skills and other harnesses.
+- [`token_saving/adl-author/SKILL.md`](token_saving/adl-author/SKILL.md) — readability modes `agent`/`mixed`/`human`; dense records; mixed docs.
+- [`token_saving/adl-memory-state/SKILL.md`](token_saving/adl-memory-state/SKILL.md) — automatic memory writing: write gate, record forms, transitions, supersession, conflicts, freshness, compaction.
+- [`token_saving/adl-context-pack/SKILL.md`](token_saving/adl-context-pack/SKILL.md) — layered retrieval (`brief`/`pack`/`get`/`find`), budgets, prefix-cache order, subagent context, agent-to-agent messages.
+- [`token_saving/adl-govern/SKILL.md`](token_saving/adl-govern/SKILL.md) — lint/fmt/stats, validation gates, version/compat governance, security checks, benchmarks.
+
+Install into a project (idempotent; `--dry-run` shows the plan; never changes permission settings):
+
+```sh
+git clone https://github.com/SATUNIX/skills && python3 skills/token_saving/adl/scripts/adl2.py install --root /path/to/project
+```
+
+The installer creates `.adl/`, links the skills into `.claude/skills/` and/or `.agents/skills/` (`--copy` to vendor them), adds a short policy block to `AGENTS.md`/`CLAUDE.md`, and installs Claude Code (`SessionStart`, `Stop`) or Pi hooks. No hook writes memory; the agent records durable facts with `adl2 add`.
 
 ### Core model
 
 ```text
-ADL-S = canonical persistent semantic source
-ADL-W = ephemeral model/tokenizer/task-specific wire representation
-
-retrieve minimum sufficient source
--> compile ADL-W
--> stable-prefix pack
--> inference
--> extract durable facts/state
--> update ADL-S/memory
--> benchmark/govern
+observations (tool output, files, user, agent reasoning)
+-> records          typed ADL2 lines; agent applies the write gate; `adl2 add` validates
+-> .adl/mem.adl     append-only log (+ hist.adl after compact); git union-mergeable
+-> state            materialized by replay; never hand-maintained
+-> projections      brief (L1-L2) | pack --task (L3) | get (L4) | msg (handoff delta + base: hash)
+-> rendering        agent | mixed | human | json
 ```
 
-ADL prioritizes semantic fidelity and task reliability over raw token reduction. Tokenizer-specific shorthand belongs in runtime compilation, not canonical documentation.
+```adl2
+@adl2 mem
+$api inference API (FastAPI, router/api.py)
+$rt request router (router/)
+f1 $api.timeout=30s [repo:router/config.toml]
+r1 $rt MUST NOT log request bodies [user] why:bodies may contain secrets
+t1 ready add retry with backoff to $rt client needs:f1 see:r1
+t1 -> done
+```
+
+ADL prioritizes correctness, security and semantic fidelity over raw token reduction. Tooling selects, orders and re-serializes records; it never paraphrases them.

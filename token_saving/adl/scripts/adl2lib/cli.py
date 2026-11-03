@@ -69,8 +69,12 @@ def cmd_fmt(args) -> int:
     bad = 0
     for f in args.files:
         text, name = read_file_arg(f)
-        out = core.fmt_text(text, name)
-        if f == "-":
+        doc = core.parse_doc(text, name)
+        for w in doc.warnings:
+            print(w.render(), file=sys.stderr)
+        # a newer minor may define attrs whose extent this tool cannot know: keep verbatim (## compat)
+        out = text if doc.header.minor > core.MINOR else core.render_doc(doc)
+        if f == "-" and not args.check:
             sys.stdout.write(out)
             continue
         if out != text:
@@ -147,12 +151,20 @@ def lazy(modname, fn):
     return run
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse with usage errors mapped to exit 1 (spec ## tool: 1 usage/IO, 2 validation)."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_IO, "%s: error: %s\n" % (self.prog, message))
+
+
 def build_parser() -> argparse.ArgumentParser:
-    common = argparse.ArgumentParser(add_help=False)
+    common = _Parser(add_help=False)
     common.add_argument("--root", help="project root containing .adl/ (default: nearest ancestor)")
     common.add_argument("--today", help="override current date YYYY-MM-DD (deterministic output)")
 
-    p = argparse.ArgumentParser(prog="adl2", description="ADL v2 tool (spec: adl2.md)")
+    p = _Parser(prog="adl2", description="ADL v2 tool (spec: adl2.md)")
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
     sub.required = True
 
@@ -252,11 +264,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     p = build_parser()
-    args = p.parse_args(argv)
+    args, extra = p.parse_known_args(argv)
+    if extra:
+        # argparse < 3.12 binds an empty `body` before options (`msg new <type> --to X -`)
+        if not isinstance(getattr(args, "body", None), list) or any(x.startswith("--") for x in extra):
+            p.error("unrecognized arguments: %s" % " ".join(extra))
+        args.body += extra
     try:
         return args.func(args) or 0
     except AdlError as e:
         print(e.render(), file=sys.stderr)
-        return EXIT_IO if e.code == "E_IO" else EXIT_INVALID
+        return EXIT_IO if e.code in ("E_IO", "E_USAGE") else EXIT_INVALID
     except BrokenPipeError:  # pragma: no cover
         return EXIT_OK

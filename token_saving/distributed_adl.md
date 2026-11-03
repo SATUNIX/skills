@@ -1,21 +1,23 @@
 # Distributed ADL
 
 status: design
-version: 1.0
+version: 1.1
 role: companion architecture
-depends_on: `adl1.md`
+depends_on: `adl2.md` (ADL v1 `adl1.md` is legacy)
 supersedes: none
 scope: multi-agent persistent memory and coordination
 
 ## relationship
 
-`adl1.md` defines the canonical ADL v1 language, semantics, source/wire model, and governance rules.
+`adl2.md` defines the canonical ADL v2 language, semantics, store, retrieval, handoff protocol, and governance rules.
 
-`distributed_adl.md` defines the multi-agent memory and coordination architecture built on ADL v1.
+`adl1.md` (ADL v1) is legacy; v1 ADL-S prose remains valid v2 mixed mode.
 
-Distributed ADL MUST use ADL v1 semantics.
+`distributed_adl.md` defines the multi-agent memory and coordination architecture built on ADL v2.
 
-Distributed ADL does not supersede or replace `adl1.md`.
+Distributed ADL MUST use ADL v2 semantics.
+
+Distributed ADL does not supersede or replace `adl2.md`.
 
 Operational skills implement both layers through progressive disclosure:
 
@@ -27,6 +29,8 @@ adl/SKILL.md
 -> adl-context-pack/SKILL.md
 -> adl-govern/SKILL.md
 ```
+
+Tool: `adl/scripts/adl2.py` (store, projections, messages, lint).
 
 ## goal
 
@@ -132,6 +136,8 @@ shared knowledge
 
 Agents SHOULD NOT require the complete historical memory set in active context.
 
+Agents coordinate with ADL v2 messages (`@adl2 msg:<type>`, adl2.md `## handoff`). A message references shared baseline records by id, pins them with a `base:` hash, and carries only deltas: transitions and new records with provisional ids. A receiver whose store lacks or differs from the baseline replies `msg:need` instead of acting.
+
 ## progressive_disclosure
 
 Current task context SHOULD contain high-value current information.
@@ -160,6 +166,12 @@ to:
 
 ```text
 navigate knowledge on demand
+```
+
+ADL v2 implements this path as deterministic, budgeted projections of one store:
+
+```text
+L0 legend -> L1/L2 adl2 brief -> L3 adl2 pack --task -> L4 adl2 get --hist, see: targets, .adl/ev/
 ```
 
 ## git_model
@@ -207,6 +219,8 @@ agent discovery
 -> canonical shared memory
 ```
 
+ADL v2 memory is an append-only log (`.adl/mem.adl`), so concurrent branches merge with git union merge (`.gitattributes`: `.adl/*.adl merge=union`, installed by `adl2.py install --git-union`). A duplicate id allocated on two branches is a lint error (`E_DUPID`); duplicate or conflicting records arriving by merge are `E_DUP`/`E_CONFLICT`. Run `adl2 lint` before merge and resolve by superseding one record.
+
 PRs therefore act as both:
 
 - code integration controls
@@ -250,7 +264,8 @@ ADL reduces shared-context cost through:
 - historical separation
 - selective retrieval
 - progressive disclosure
-- model-specific ADL-W compilation
+- task-specific `brief`/`pack` projections
+- baseline-hash message deltas
 
 Result:
 
@@ -435,10 +450,12 @@ Combined, these components enable scalable multi-agent memory swarms with durabl
 
 ## ref
 
-- `adl1.md` — canonical ADL v1 language/specification.
+- `adl2.md` — canonical ADL v2 language/specification.
+- `adl1.md` — legacy ADL v1 specification.
+- `adl/scripts/adl2.py` — ADL v2 tool.
 - `adl/SKILL.md` — autonomous ADL entry/router.
 - `adl-bootstrap/SKILL.md` — harness/repository bootstrap and migration.
-- `adl-author/SKILL.md` — ADL-S authoring.
+- `adl-author/SKILL.md` — authoring in agent/mixed/human modes.
 - `adl-memory-state/SKILL.md` — durable memory/state operations.
-- `adl-context-pack/SKILL.md` — retrieval, ADL-W packing, and prefix-cache optimization.
+- `adl-context-pack/SKILL.md` — retrieval, packing, prefix-cache optimization, and agent handoffs.
 - `adl-govern/SKILL.md` — linting, benchmarking, and governance.

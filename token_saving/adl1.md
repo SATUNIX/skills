@@ -1,11 +1,11 @@
 ---
 name: agent-dense-language
-description: Canonical ADL v1 specification for dense, deterministic, provenance-aware AI documentation and runtime context. Use for agent-consumed docs, memory, state, specs, runbooks, skills, tool docs, changelogs, handoffs, and comments unless explicitly human-only.
+description: Legacy ADL v1 specification (superseded by adl2.md) for dense, deterministic, provenance-aware AI documentation and runtime context. v1 ADL-S prose rules remain valid ADL v2 mixed mode; use adl2.md for memory, state, packs and handoffs.
 ---
 
 # ADL v1 — Agent Dense Language
 
-status: normative
+status: legacy (superseded by adl2.md; v1 ADL-S prose remains valid v2 mixed mode)
 version: 1.0.0
 
 ## goal

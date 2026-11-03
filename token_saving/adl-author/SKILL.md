@@ -1,304 +1,147 @@
 ---
 name: adl-author
-description: Author and rewrite persistent agent-consumed documentation in ADL v1. Select the correct profile, normalize terminology, preserve exact semantics, remove duplication/filler, and emit deterministic dense source text without cryptic shorthand.
+description: Author and rewrite persistent agent-consumed text in ADL v2. Use when creating or editing specs, runbooks, skills, tool docs, reference or architecture docs, changelogs, AI-oriented comments, standalone record files or `adl2` blocks. Selects the readability mode (agent, mixed, human); writes dense ADL2 records in agent mode, v1 ADL-S controlled English with optional `adl2` fences in mixed docs, and leaves human-facing docs untouched.
 ---
 
 # ADL Author
 
-## trigger
-
-Use when creating or modifying:
-- specs
-- architecture/reference docs
-- runbooks
-- skills/workflows
-- tool documentation
-- state summaries
-- changelogs
-- agent handoffs
-- AI-oriented comments
-- persistent machine-consumed Markdown/text
-
-Do not use for explicitly human-only prose unless requested.
-
-Canonical spec:
-
-`../adl1.md`
-
 ## goal
 
-Produce ADL-S that preserves all task-relevant semantics while minimizing ambiguity, duplication, and unnecessary tokens.
+Persistent text keeps every task-relevant semantic unit with minimal ambiguity and tokens, in the mode its readers need.
 
-## algorithm
+Tool: `adl2` = `python3 <skills>/adl/scripts/adl2.py`; exact path in the `AGENTS.md`/`CLAUDE.md` policy block; from a skill directory: `../adl/scripts/adl2.py`.
+Spec: `adl2 spec modes`, `adl2 spec grammar`, `adl2 spec kinds`, `adl2 spec attrs`, `adl2 spec compat`. Store writes: skill adl-memory-state.
 
-1. determine audience and document purpose.
-2. select the nearest ADL document profile.
-3. extract atomic semantic units before rewriting.
-4. classify units as fact, requirement, invariant, decision, action, state, risk, question, rationale, evidence, interface, or failure.
-5. preserve exact numbers, units, conditions, negation, uncertainty, security constraints, and provenance.
-6. normalize synonyms to existing project terminology.
-7. remove filler, duplicated context, rhetorical transitions, and irrelevant tool narration.
-8. convert repeated structure to fields/lists/tables where clearer.
-9. add stable typed IDs only when future reference is valuable.
-10. separate rationale/evidence from normative requirement text.
-11. order sections canonically; omit empty sections.
-12. run formatter/linter when available.
-13. compare final meaning against source before persistence.
+## modes
 
-## fidelity checks
+| mode | artifacts | encoding |
+| --- | --- | --- |
+| `agent` | `.adl/*.adl`, packs, agent messages, standalone record files | pure ADL2 record lines |
+| `mixed` | specs, runbooks, skills, tool and reference docs, `AGENTS.md` | Markdown + controlled technical English (v1 ADL-S); dense records only inside `adl2` fences |
+| `human` | `audience: human` front matter, `*.human.md`, user asks for prose | normal prose; never converted |
 
-Before saving, verify no source semantic unit was accidentally changed in:
-- actor/subject.
-- MUST/MUST NOT/SHOULD/MAY modality.
-- numeric value.
-- unit.
-- threshold/range.
-- ordering/dependency.
-- precondition/postcondition.
-- failure behavior.
-- security boundary.
-- uncertainty state.
-- rationale affecting future decisions.
+- Defaults: memory and messages are `agent`; repository docs are `mixed`.
+- Existing prose written for people stays prose; add `audience: human` when it lacks a marker.
+- External or executable formats (JSON, YAML, code) keep their native syntax.
 
-If compression would remove one of these, keep the detail.
+## agent mode
 
-## controlled style
+Standalone record file: `@adl2 doc` on line 1, `.adl` extension.
 
-Prefer:
-
-```text
-router rejects malformed requests.
-r1: worker MUST preserve task order ; verify=test:order
-state: blocked
-cause: missing credentials
+```adl2
+@adl2 doc
+$api inference API (FastAPI, router/api.py)
+$rt request router (router/)
+i1 $rt MUST preserve request order per session [repo:router/queue.py] verify:test:test_order
+r1 $rt MUST NOT log request bodies [user] verify:test:no_body_log why:bodies may contain secrets
+d1 enable vLLM automatic prefix caching [bench:apc-01] why:agent prompts share stable prefixes over:manual KV store (maintenance cost)
+p1 restart $api
+  1. systemctl stop api
+  2. wait until port 8443 is free
+  3. systemctl start api
+f1 $api.timeout=30s [repo:router/config.toml]
+f2 hosts[2]{id,ip,role}:
+  h1,10.0.0.10,api
+  h2,10.0.0.11,worker
 ```
 
-Avoid:
+Encoding by information type:
 
-```text
-It is important to note that, in order to ensure correct operation, the worker should make sure that task ordering is preserved.
+| information | encoding |
+| --- | --- |
+| unique conceptual fact | `f`; keyed form `subject.attr=value` when it has a value |
+| constraint, always-true property | `r` (BCP14 modal required), `i` |
+| choice with tradeoff | `d` with `why:` and `over:` |
+| repeated entity | `$alias description`, referenced as `$alias` |
+| large homogeneous data | table `name[n]{cols}:` + n CSV rows as continuation lines |
+| multi-step method | `p` with numbered continuation lines, or `see:` a runbook |
+| nuanced constraint or reasoning | `r`/`i`/`d` with a controlled-English body and `why:` |
+| tool output | `e` pointer to the raw artifact + `f` records citing it |
+
+Rules:
+1. One claim per record; the body is controlled English or `key=value`.
+2. Exact values, units, ranges and thresholds verbatim (`30s`, `80GB`, `batch=64`); never round.
+3. Negation and polarity are content: `not`, `no`, `never`, `without`, `MUST NOT`, `denied`, `pending`.
+4. Requirement bodies contain an uppercase modal: `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, `MAY`.
+5. Causes go in `why:` or a `derived:` record with basis, never implied by adjacency.
+6. Define a `$alias` for a name of 3+ words that recurs; store lint `W_ALIAS` suggests candidates.
+7. Text containing a reserved token start (`[ ^ @ #`, `why:` …) is wrapped in backticks: `` f9 list syntax is `[1,2,3]` ``.
+8. Table row and column counts match the declaration (`E_TABLE`).
+9. Serialize canonically: `adl2 fmt FILE.adl` (idempotent); attr order `[basis] ^sup @date until: needs: verify: see: by: #tags why: over:`.
+
+## mixed mode
+
+v1 ADL-S rules remain valid v2 mixed mode (legacy spec `adl1.md`):
+- controlled technical English: explicit subject, active voice, one statement per line or bullet;
+- target <= 20 words per instruction, <= 25 per description, unless splitting damages meaning;
+- uppercase BCP14 modals for normative statements; a requirement names its subject and verification;
+- one concept -> one term; project and domain terms first; no ad-hoc abbreviations;
+- no filler, rhetorical transitions, duplicated context or tool narration;
+- epistemic words `observed derived assumed unknown disputed` where uncertainty matters; no confidence percentages;
+- tables for homogeneous rows only;
+- canonical section order per profile; omit empty sections.
+
+| profile | sections |
+| --- | --- |
+| reference | summary fact interface constraint example ref |
+| specification | goal scope non_goal req inv flow failure security performance dec risk accept ref |
+| runbook | goal trigger pre step check failure rollback escalate ref |
+| tool | purpose input output side_effect permission idempotence failure example ref |
+| skill | trigger goal input rule algorithm tool output failure state ref |
+
+Dense records belong only inside `adl2` fences. A fence is a fragment: no header needed, refs to records outside it are allowed, every line must parse (`adl2 lint FILE.md` checks every fence). Readers MUST NOT apply v2 sigil semantics outside `adl2` fences.
+
+````markdown
+## failure
+
+Router rejects request bodies above 1MiB with 413.
+
+```adl2
+r4 router MUST reject request bodies above 1MiB with 413 [repo:router/limits.py] verify:test:test_body_limit
+k2 clients without retry treat 413 as fatal
 ```
+````
 
-Use active voice and explicit subjects when ambiguity is possible.
+Prose style: prefer `r3: cache MUST invalidate when project_hash changes ; verify=test:cache_invalidation` (v1 ADL-S line, valid mixed mode) over "It is important to ensure the cache is invalidated whenever the project hash changes."
 
-Normal target lengths:
+## human mode
 
-```text
-instruction <= 20 words
-description <= 25 words
-```
-
-Longer statements are allowed when splitting would damage meaning.
-
-## terminology
-
-Rule:
-
-`one concept -> one emitted term`
-
-Use project/domain canonical terms before inventing new terminology.
-
-Do not shorten common words into ad-hoc abbreviations in ADL-S.
-
-Domain-standard abbreviations are allowed when unambiguous.
-
-If `.adl/lexicon.adl` exists, follow it.
-
-If terminology conflicts:
-1. prefer explicit project definition.
-2. otherwise prefer established domain standard.
-3. record a terminology decision only when future drift is likely.
-
-## normative statements
-
-Use uppercase:
-
-```text
-MUST
-MUST NOT
-SHOULD
-SHOULD NOT
-MAY
-```
-
-A requirement SHOULD identify its responsible subject and verification method.
-
-Example:
-
-```text
-r3: cache MUST invalidate when project_hash changes ; verify=test:cache_invalidation
-```
-
-Do not hide requirements inside rationale paragraphs.
-
-## epistemic statements
-
-Use:
-
-```text
-observed
-derived
-assumed
-unknown
-disputed
-```
-
-Do not create arbitrary self-confidence percentages.
-
-When evidence matters:
-
-```text
-f4: service listens on 443 ; epistemic=observed ; basis=e2
-```
-
-## profiles
-
-### reference
-
-```text
-summary:
-fact:
-interface:
-constraint:
-example:
-ref:
-```
-
-### specification
-
-```text
-goal:
-scope:
-non_goal:
-req:
-inv:
-flow:
-failure:
-security:
-performance:
-dec:
-risk:
-accept:
-ref:
-```
-
-### runbook
-
-```text
-goal:
-trigger:
-pre:
-step:
-check:
-failure:
-rollback:
-escalate:
-ref:
-```
-
-### tool
-
-```text
-purpose:
-input:
-output:
-side_effect:
-permission:
-idempotence:
-failure:
-example:
-ref:
-```
-
-### skill
-
-```text
-trigger:
-goal:
-input:
-rule:
-algorithm:
-tool:
-output:
-failure:
-state:
-ref:
-```
-
-### state
-
-```text
-goal:
-state:
-done:
-doing:
-blocked:
-next:
-risk:
-ref:
-```
-
-## tables
-
-Use compact tabular form for repeated homogeneous records only.
-
-Example:
-
-```text
-tab hosts id,ip,state,role
-h1,10.0.0.10,ready,api
-h2,10.0.0.11,blocked,worker
-```
-
-Do not force heterogeneous semantic text into tables merely to reduce characters.
-
-## comments
-
-Use comments only for non-obvious meaning.
-
-Tags:
-
-```text
-WHY
-INV
-SEC
-EDGE
-COMPAT
-PERF
-TODO
-```
-
-Example:
-
-```python
-# INV: project_hash change invalidates the project prefix.
-```
-
-Delete comments that merely restate code.
+- Leave the prose; do not convert it to records or to controlled English.
+- Show records to humans with `adl2 decode FILE --view human` or `adl2 pack --task "…" --view human`.
+- Convert between human and mixed only on explicit user request.
 
 ## rewrite protocol
 
-When converting legacy prose:
+`read -> semantic inventory -> classify (mode, kind) -> normalize terms -> structure -> compress -> fidelity compare -> persist`
 
-`read -> semantic inventory -> normalize -> structure -> compress -> fidelity compare -> persist`
+Never `read -> summarize -> overwrite`.
 
-Do not use:
+- v1 memory, state and handoff text: convert with `adl2 migrate` (skill adl-bootstrap).
+- v1 ADL-S docs are valid mixed docs: do not bulk-convert them.
 
-`read -> summarize -> overwrite`
+## fidelity checks
 
-The first process is semantic normalization. The second risks lossy replacement.
+Before saving, compare against the source; none of these may change:
+- actor or subject; modality (`MUST`/`MUST NOT`/`SHOULD`/`MAY`);
+- numeric value, unit, threshold or range;
+- order, dependency, precondition, postcondition;
+- failure behavior and security boundary;
+- uncertainty state and rationale that affects decisions.
 
-## human escape
+If compression would drop one of these, keep the detail.
 
-If file metadata or filename explicitly indicates human-only content, preserve normal prose unless the user explicitly requests ADL conversion.
+## comments
 
-Mixed content remains ADL but MAY use slightly more explanatory headings/examples when they improve human debugging without duplicating semantics.
+Comment only non-obvious meaning, with a tag: `WHY INV SEC EDGE COMPAT PERF TODO`. Example: `# INV: project_hash change invalidates the project prefix.` Delete comments that restate code.
+
+## validation
+
+- `adl2 lint FILE.md` (every `adl2` fence) or `adl2 lint FILE.adl`; `adl2 fmt --check FILE.adl`.
+- `adl2 stats OLD NEW` compares token counts when density is the goal.
 
 ## output
 
-Persist only final ADL-S, not hidden reasoning or transformation narration.
-
-For a handoff after edits use:
+Persist only the final text, never transformation narration. After edits report:
 
 ```text
 outcome: done|partial|failed

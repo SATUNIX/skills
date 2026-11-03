@@ -145,7 +145,7 @@ class Line:
         for t in texts:
             for m in ALIAS_USE_RE.finditer(TICK_RE.sub("", t or "")):
                 out.add("$" + m.group(1))
-        for r in self.basis + self.see():
+        for r in self.basis + self.sup + self.needs() + self.see():
             if ALIAS_RE.match(r):
                 out.add(r)
         if self.typ == "ent":
@@ -255,7 +255,7 @@ def scan(s: str, lineno: int = 0) -> list:
         if c == "`":
             tick = not tick
             cur.append(c)
-        elif c.isspace() and not tick:
+        elif c in " \t" and not tick:
             if cur:
                 toks.append("".join(cur))
                 cur = []
@@ -339,10 +339,9 @@ def _parse_tail(toks: list, i: int, ln: Line, lineno: int, allow_body: bool = Tr
                     raise AdlError("E_SYNTAX", "empty %s:" % key, lineno)
             if key == "until" and not DATE_RE.match(val):
                 raise AdlError("E_SYNTAX", "until: needs ISO date, got %r" % val, lineno)
-            if key in LIST_KEYS and key in ln.kv:
-                ln.kv[key] += "," + val
-            else:
-                ln.kv[key] = val
+            if key in LIST_KEYS and not split_list(val):
+                raise AdlError("E_SYNTAX", "empty %s:" % key, lineno)
+            ln.kv[key] = val
         elif typ == "basis":
             for r in c[1]:
                 if r not in ln.basis:
@@ -395,10 +394,11 @@ def parse_line(raw: str, lineno: int = 0, allow_bare: bool = False) -> Line:
         _parse_tail(toks, 1, ln, lineno)
         if not ln.body:
             raise AdlError("E_SYNTAX", "entity %s needs a description" % head, lineno)
+        _check_body_start(ln, lineno)
         return ln
     m = ID_RE.match(head) or PROV_RE.match(head) or (BARE_RE.match(head) if allow_bare else None)
     if not m:
-        raise AdlError("E_SYNTAX", "line must start with record id, $alias, %, # or indent: %r" % head, lineno)
+        raise AdlError("E_SYNTAX", "line must start with record id, $alias, %%, # or indent: %r" % head, lineno)
     kind = head[0]
     if len(toks) > 1 and toks[1] == "->":
         ln = Line("tr", lineno)
@@ -421,7 +421,20 @@ def parse_line(raw: str, lineno: int = 0, allow_bare: bool = False) -> Line:
     _parse_tail(toks, i, ln, lineno)
     if not ln.body:
         raise AdlError("E_SYNTAX", "%s has empty body" % head, lineno)
+    _check_body_start(ln, lineno)
     return ln
+
+
+def _check_body_start(ln: Line, lineno: int):
+    """Body text written after attrs is rendered first; it must re-parse as body (## grammar rules 1, 4).
+
+    Otherwise fmt could add an epistemic mark, a status, or turn a record into a transition.
+    """
+    if ln.mark is not None or ln.status is not None:
+        return  # a mark/status token sits between id and body, so the body cannot be misread
+    first = ln.body.split(" ", 1)[0]
+    if first == "->" or first in MARK_TOKENS:
+        raise AdlError("E_SYNTAX", "body must not start with %r; wrap it in backticks" % first, lineno)
 
 
 def _parse_transition(ln: Line, toks: list, lineno: int) -> Line:
@@ -433,7 +446,7 @@ def _parse_transition(ln: Line, toks: list, lineno: int) -> Line:
     ln.state = st
     _parse_tail(toks, 3, ln, lineno, allow_body=False)
     if ln.sup or ln.tags:
-        raise AdlError("E_SYNTAX", "transition takes only [basis] @date why: see: by:", lineno)
+        raise AdlError("E_SYNTAX", "transition takes [basis] @date and key: attrs only (no ^ or #tags)", lineno)
     return ln
 
 
@@ -467,7 +480,9 @@ def parse_header(s: str, lineno: int = 1) -> Header:
 
 def parse_doc(text: str, path: str = "", allow_bare: bool = False, need_header: bool = True) -> Doc:
     """Parse a full ADL2 file. Raises AdlError on the first error."""
-    lines = text.splitlines()
+    lines = [l[:-1] if l.endswith("\r") else l for l in text.split("\n")]
+    if lines and lines[-1] == "":
+        lines.pop()
     start = 0
     if need_header:
         if not lines:
@@ -619,7 +634,13 @@ def sort_key(rid: str):
 
 
 def norm_text(s: str) -> str:
+    """Case-folded, whitespace-normalized text (duplicate detection of prose bodies)."""
     return " ".join((s or "").lower().split())
+
+
+def norm_value(s: str) -> str:
+    """Whitespace-normalized, case-preserving: exact values and units are verbatim (## semantics)."""
+    return " ".join((s or "").split())
 
 
 def is_external(ref: str) -> bool:
