@@ -126,7 +126,7 @@ class ProjectCliTest(unittest.TestCase):
         self.assertEqual(ids[3:], sorted(ids[3:], key=core.sort_key))
         self.assertEqual(ids[3:7], ["i1", "r1", "r2", "r3"])
         self.assertLess(ids.index("r3"), ids.index("d1"))
-        self.assertNotIn("% more:", out)
+        self.assertNotIn("% expand:", out)
         self.assertNotIn("over budget", out)
         # latest transition follows its record; status never folded into the creation line
         self.assertIn("t4 ready write runbook for $api restarts\nt4 -> wait why:needs ops review\n", out)
@@ -136,7 +136,7 @@ class ProjectCliTest(unittest.TestCase):
         out = self.cli("brief", "--budget", "120")
         ids = set(record_ids(out))
         self.assertTrue(BRIEF_MUST <= ids, BRIEF_MUST - ids)
-        self.assertIn('% more: pack --task "..." | get <id> | find <term>', out)
+        self.assertIn('% expand: pack --task "..." | get <id> | find <term>', out)
         omitted = re.search(r"^% omitted: (.*)$", out, re.M).group(1).split()
         self.assertEqual(omitted, sorted(omitted, key=core.sort_key))
         self.assertEqual(ids - {"$api", "$db", "$rt"} | set(omitted), BRIEF_MUST | BRIEF_OPTIONAL)

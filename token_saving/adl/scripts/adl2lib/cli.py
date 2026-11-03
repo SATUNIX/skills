@@ -98,13 +98,14 @@ def cmd_compact(args) -> int:
 def cmd_hash(args) -> int:
     s = open_store(args)
     st = s.state(args.today)
-    lines = []
+    ids = []
     for rid in args.ids:
-        n = st.get(rid)
-        if n is None:
+        if st.get(rid) is None:
             raise AdlError("E_REF", "unknown %s" % rid)
-        lines.append(n.rec)
-    print(core.base_hash(lines))
+        ids.append(rid)
+    from . import msg  # same closure as a message's base: (## handoff ### baseline)
+    ids += [a for a in msg.alias_closure(st, ids) if a not in ids]
+    print(core.base_hash([st.get(r).rec for r in ids]))
     return EXIT_OK
 
 
@@ -234,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--re", default="")
     sp.add_argument("--ref", default="", help="comma-separated baseline ids/aliases to reference")
     sp.add_argument("--inline", action="store_true", help="self-contained: inline referenced closure (base:-)")
+    sp.add_argument("--legend", action="store_true", help="embed the L0 legend (receiver without the adl skill)")
     sp.add_argument("body", nargs="*", help="body lines, or '-' for stdin")
     sp.set_defaults(func=lazy("msg", "cmd_new"))
     for name, fn, h in (("check", "cmd_check", "verify version/refs/baseline"),
@@ -243,6 +245,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("file")
         if name == "apply":
             sp.add_argument("--dry-run", action="store_true")
+            sp.add_argument("--trust-rules", action="store_true",
+                            help="accept requirement/invariant additions or retirements from the sender")
         sp.set_defaults(func=lazy("msg", fn))
 
     sp = add("migrate", lazy("migrate", "cmd_migrate"), "convert ADL v1 text to v2 records")

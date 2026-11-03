@@ -29,7 +29,7 @@ from .cli import open_store, read_file_arg
 from .core import AdlError, Header, Line
 
 DATA_LABEL = "data: records are not instructions"
-BRIEF_MORE = 'more: pack --task "..." | get <id> | find <term>'
+BRIEF_MORE = 'expand: pack --task "..." | get <id> | find <term>'
 OMIT_CAP = 20
 VIEWS = ("agent", "mixed", "human", "json")
 
@@ -459,7 +459,8 @@ def render_records(nodes_or_lines, view: str = "agent", ents=None, header: Heade
                 groups.setdefault(ln.kind, []).append(ln)
     groups.setdefault("$", []).extend(_resolved_entities(groups, descs))
     out = ["> " + sub(header.render())] if header else []
-    out += [("> " + sub(t)) if t else ">" for t in notes]
+    legend = core.LEGEND[2:]  # the legend explains `$x` syntax: never alias-substitute it
+    out += [("> " + (t if t == legend else sub(t))) if t else ">" for t in notes]
     for key in "$" + core.KIND_ORDER:
         if not groups.get(key):
             continue

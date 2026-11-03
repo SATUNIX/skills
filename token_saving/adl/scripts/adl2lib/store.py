@@ -23,7 +23,7 @@ MEM = "mem.adl"
 HIST = "hist.adl"
 MANIFEST = "manifest.toml"
 
-CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+CTRL_RE = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
 INJECT_PATTERNS = [
     r"ignore (all |any )?(previous|prior|above) (instructions|prompts?)",
     r"disregard (the |all |previous )?(instructions|system prompt|rules)",
@@ -33,9 +33,11 @@ INJECT_PATTERNS = [
     r"new instructions?:",
     r"do not tell the user",
 ]
-MAY_RE = re.compile(r"\bMAY\b")
+MAY_RE = re.compile(r"\b(MAY|MUST|SHOULD)\b(?! NOT)")
 MAY_VERB_RE = re.compile(r"\b(skip|bypass|disable|ignore|override)\b")
+NEG_CLAUSE_RE = re.compile(r"\b(MUST|SHOULD) NOT\b")
 WIDEN_PATTERNS = [
+    r"\bpush(es)? directly to (main|master|prod)\b",
     r"\b(without|no) (review|approval|confirmation|permission)\b",
     r"\bforce[- ]push\b",
     r"\b(grant|grants|granted) (itself|yourself|agent|agents)\b",
@@ -304,7 +306,7 @@ class Store:
                 self._depth -= 1
             return
         fh = None
-        if self.dir.is_dir():  # never create .adl/ just to read a directory without a store
+        if self.dir.is_dir() and self.cache_ok():  # never create .adl/ for a read; never write outside it
             try:
                 (self.dir / "cache").mkdir(exist_ok=True)
                 fh = open(str(self.dir / "cache" / "lock"), "a+")
@@ -321,6 +323,14 @@ class Store:
                 if fcntl is not None:
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
                 fh.close()
+
+    def cache_ok(self) -> bool:
+        """.adl/cache (if present) must resolve inside .adl/: a committed symlink must not redirect writes."""
+        c = self.dir / "cache"
+        if not c.exists() and not c.is_symlink():
+            return True
+        real, base = os.path.realpath(str(c)), os.path.realpath(str(self.dir))
+        return real.startswith(base + os.sep)
 
     def append_lines(self, rendered: list):
         """Append canonical lines. Refuses anything that would not read back as the same lines."""
@@ -361,7 +371,7 @@ class Store:
             keep = []
             for rid in st.order:
                 n = st.get(rid)
-                if rid.startswith("$") or (n.active and not (n.kind in "tgq" and n.closed)):
+                if rid.startswith("$") or (n.active and not (n.kind in "tgqk" and n.closed)):
                     keep.append(n)
             keep_ents = sorted([n for n in keep if n.id.startswith("$")], key=lambda n: n.id)
             keep_recs = sorted([n for n in keep if not n.id.startswith("$")], key=lambda n: core.sort_key(n.id))
@@ -487,25 +497,37 @@ class AddResult:
         return ("ok " + " ".join(parts)) if parts else "ok (nothing to add)"
 
 
-def external_basis(ln: Line, st: State = None, _seen=None) -> bool:
-    """True when every leaf of the basis chain is external (web:/ext:/tool:/agent:) (## security 2).
+INTERNAL_REF_CLASSES = ("repo", "test", "bench", "doc")
 
-    Record-id basis is followed through `st` (cycle-safe); a record without basis, an alias,
-    `user` and repository/test/bench/doc refs are not external.
+
+def _leaf_external(ref: str) -> bool:
+    """A non-record, non-alias basis ref: external unless 'user' or an internal class (## security 2)."""
+    if ref == "user":
+        return False
+    cls = ref.split(":", 1)[0] if ":" in ref else ""
+    return cls not in INTERNAL_REF_CLASSES
+
+
+def external_basis(ln: Line, st: State = None, _seen=None) -> bool:
+    """True when every leaf of the basis chain is external (## security 2).
+
+    External: web:/ext:/tool:/agent: and any class outside {repo, test, bench, doc}; 'user' is not.
+    Record-id and $alias basis is followed through `st` (cycle-safe); a record or alias without
+    basis (or unresolvable without a state) is not external.
     """
     if not ln.basis:
         return False
     seen = _seen if _seen is not None else set()
     for b in ln.basis:
-        if core.is_external(b):
-            continue
-        if st is not None and core.ID_RE.match(b) and b not in seen:
-            n = st.nodes.get(b)
+        if core.ANYID_RE.match(b) or core.ALIAS_RE.match(b):
+            n = st.get(b) if st is not None and b not in seen else None
             if n is not None:
                 seen.add(b)
                 if external_basis(n.rec, st, seen):
                     continue
-        return False
+            return False
+        if not _leaf_external(b):
+            return False
     return True
 
 
@@ -537,9 +559,12 @@ def check_line_policy(ln: Line, res: AddResult, st: State = None):
                 res.warnings.append(AdlError("W_INJECT", "%s contains instruction-shaped text; quote it in backticks as data" % ln.id, ln.lineno))
                 break
         if ln.typ == "rec" and ln.kind in "rip":
-            m = MAY_RE.search(text)
-            widen = bool(m and MAY_VERB_RE.search(text, m.end()))
-            widen = widen or any(re.search(p, text) for p in WIDEN_PATTERNS)
+            # a protective MUST NOT/SHOULD NOT clause restricts; only the text before it can widen
+            neg = NEG_CLAUSE_RE.search(text)
+            scope = text[:neg.start()] if neg else text
+            m = MAY_RE.search(scope)
+            widen = bool(m and MAY_VERB_RE.search(scope, m.end()))
+            widen = widen or any(re.search(p, scope) for p in WIDEN_PATTERNS)
             if widen:
                 res.warnings.append(AdlError("W_WIDEN", "%s may widen authority; records cannot grant permissions" % ln.id, ln.lineno))
 
@@ -622,6 +647,8 @@ def prepare_add(st: State, text: str) -> AddResult:
     for ln in lines:
         if ln.typ in ("blank", "cmt", "head"):
             continue
+        if ln.moved:
+            res.warnings.append(AdlError("W_NORM", "text after an attr was moved into the body: stored as %r (backtick-quote text that is not an attr)" % core.render_line(ln).split("\n")[0], ln.lineno))
         if ln.typ == "ent":
             check_refs(ln, ln.id)
             prev = st.ents.get(ln.id)
@@ -644,6 +671,9 @@ def prepare_add(st: State, text: str) -> AddResult:
             n = st.get(ln.id)
             if n is None:
                 res.errors.append(AdlError("E_REF", "transition target %s unknown" % tok, ln.lineno))
+                continue
+            if ln.id in st.dupids:
+                res.errors.append(AdlError("E_DUPID", "transition target %s is defined twice in the store; resolve E_DUPID first (adl2 lint)" % tok, ln.lineno))
                 continue
             check_refs(ln, tok)
             same_last = bool(n.trans) and core.render_line(n.trans[-1]) == core.render_line(ln)

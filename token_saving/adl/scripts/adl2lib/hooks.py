@@ -181,6 +181,8 @@ def truncate(text: str, limit: int) -> str:
 def _mark_session(s: store.Store, payload: dict):
     """Write the session baseline once; a later start of the same session (resume,
     compact, clear with the same id) keeps it, so writes made before it still count."""
+    if not s.cache_ok():  # a committed .adl/cache symlink must not redirect writes outside the store
+        return
     cache = s.dir / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     marker = cache / ("session-%s.json" % _session_id(payload))
@@ -207,6 +209,8 @@ def _stop(s: store.Store, conf: dict, payload: dict):
     if not isinstance(base, dict) or base.get("mem_sha") != _sha(s.mem):
         return  # memory was written this session (or the marker is unusable)
     if count_tool_uses(payload.get("transcript_path")) < conf["stop_min_tool_calls"]:
+        return
+    if not s.cache_ok():
         return
     nudged.write_text("%d\n" % int(time.time()), encoding="utf-8")
     _out(json.dumps({"decision": "block", "reason": STOP_REASON % shlex.quote(conf["tool"])}) + "\n")

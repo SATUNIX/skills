@@ -211,7 +211,15 @@ def _write(real_root: str, path: Path, text: str):
     # keeps newlines as given
     _guard(real_root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(text.encode("utf-8"))
+    # write the resolved target via temp + replace: in-project symlinks stay links, and a hardlink
+    # to a file outside the project is broken instead of written through
+    target = Path(os.path.realpath(str(path)))
+    _guard(real_root, target)
+    tmp = target.with_name(target.name + ".adl2.tmp")
+    tmp.write_bytes(text.encode("utf-8"))
+    if target.exists():
+        os.chmod(str(tmp), os.stat(str(target)).st_mode & 0o7777)
+    os.replace(str(tmp), str(target))
 
 
 class Plan:

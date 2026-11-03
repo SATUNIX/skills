@@ -7,6 +7,7 @@ Spec:  token_saving/adl2.md
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True  # never leave __pycache__ in an installed skill directory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from adl2lib.cli import main  # noqa: E402
