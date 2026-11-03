@@ -20,7 +20,7 @@ Specification:
 
 Tool:
 
-- [`token_saving/adl/scripts/adl2.py`](token_saving/adl/scripts/adl2.py) — Python >= 3.8, stdlib only: `add get find brief pack decode fmt lint compact hash msg migrate stats install hook legend spec`. Run `python3 token_saving/adl/scripts/adl2.py --help`.
+- [`token_saving/adl/scripts/adl2.py`](token_saving/adl/scripts/adl2.py) — Python >= 3.8, stdlib only: `init install add get find brief pack decode fmt lint compact hash msg migrate stats hook legend spec`. Run `python3 token_saving/adl/scripts/adl2.py --help`.
 
 Agent Skills:
 
@@ -37,7 +37,7 @@ Install into a project (idempotent; `--dry-run` shows the plan; never changes pe
 git clone https://github.com/SATUNIX/skills && python3 skills/token_saving/adl/scripts/adl2.py install --root /path/to/project
 ```
 
-The installer creates `.adl/`, links the skills into `.claude/skills/` and/or `.agents/skills/` (`--copy` to vendor them), adds a short policy block to `AGENTS.md`/`CLAUDE.md`, and installs Claude Code (`SessionStart`, `Stop`) or Pi hooks. No hook writes memory; the agent records durable facts with `adl2 add`.
+The installer creates `.adl/`, puts the skills into `.claude/skills/` and/or `.agents/skills/` (copies when the skills source is outside the project, as with the clone above; symlinks when it is inside; `--copy`/`--link` force a mode), adds a short policy block to `AGENTS.md`/`CLAUDE.md`, and installs Claude Code (`SessionStart`, `Stop`) or Pi hooks. It never writes outside `--root`. No hook writes memory; the agent records durable facts with `adl2 add`, run from the project root with the tool path the policy block names.
 
 ### Core model
 

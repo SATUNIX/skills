@@ -9,9 +9,10 @@ inspection; they never feed back into the store.
 
 Budget accounting (brief, pack): every candidate costs the tokens of its canonical lines
 plus the `$entity` definitions it needs that are not selected yet. Header and leading
-comments are reserved up front; the trailing `% more:`/`% omitted:` lines are reserved
-only when something has to be omitted. The header `tok:` value is the count of the whole
-final output (header included), found by iterating to a fixed point.
+comments (including pack's `% stale:` line) are reserved up front; the trailing
+`% more:`/`% omitted:` lines are reserved only when something has to be omitted. The
+header `tok:` value is the count of the whole final output (header included), found by
+iterating to a fixed point.
 """
 from __future__ import annotations
 
@@ -235,23 +236,27 @@ class _Picker:
 
 
 def _select(st, forced, optional, avail, reserve, expand=None):
-    """Force `forced`, then add `optional` in priority order while they fit (skipping ones that
-    do not). If anything is omitted, redo with `reserve` tokens kept for the trailing comments.
-    Returns (picker, omitted ids in priority order)."""
+    """Force `forced`; then, while they fit (skipping ones that do not), add the `expand`
+    dependencies of the forced records, then `optional` in priority order, each followed by its
+    own `expand` dependencies. If anything is omitted (including a dependency that did not
+    fit), redo with `reserve` tokens kept for the trailing comments.
+    Returns (picker, omitted ids in priority order, without duplicates)."""
+    deps = expand or (lambda n: ())
     for spare in (0, reserve):
         p = _Picker(st, avail - spare)
         for n in forced:
             p.take(n, force=True)
         omitted = []
+        for n in forced:
+            omitted += [d.id for d in deps(n) if not p.take(d)]
         for n in optional:
             if n.id in p.chosen:
                 continue
             if p.take(n):
-                for dep in expand(n) if expand else ():
-                    p.take(dep)
+                omitted += [d.id for d in deps(n) if not p.take(d)]
             else:
                 omitted.append(n.id)
-        omitted = [i for i in omitted if i not in p.chosen]
+        omitted = [i for i in dict.fromkeys(omitted) if i not in p.chosen]
         if not omitted:
             break
     return p, omitted
@@ -353,9 +358,13 @@ def pack_text(st, task: str, budget: int = 2000, view: str = "agent", legend: bo
 
     Score = sum of idf(term) = log(1 + N/(1+df)) over distinct task terms found in the record
     text, N/df over the candidate pool. `tags` restricts scored records to those carrying one of
-    the tags (must-include records and 1-hop dependencies are not restricted). The budget is
-    applied to canonical (agent) lines; other views re-render the same selection and report
-    their own size and any excess.
+    the tags (must-include records and 1-hop dependencies are not restricted). Must-include
+    records also get their 1-hop `needs:`/basis records when budget allows; every record or
+    dependency that does not fit is listed in `% more:`. Without `stale`, stale records are not
+    candidates, but the relevant ones (every `i`/`r`, and any record a task term matches,
+    within `tags`) are listed in a leading `% stale:` comment, so none is dropped silently.
+    The budget is applied to canonical (agent) lines; other views re-render the same selection
+    and report their own size and any excess.
     """
     if view not in VIEWS:
         raise AdlError("E_USAGE", "unknown view %r (%s)" % (view, " ".join(VIEWS)))
@@ -363,14 +372,17 @@ def pack_text(st, task: str, budget: int = 2000, view: str = "agent", legend: bo
     pool = [n for n in active if stale or not n.stale]  # step 1
     pool_ids = {n.id for n in pool}
     descs = _descs(st.ents)
-    rterms = {n.id: _terms(_record_text(n.rec, descs)) for n in pool}
-    df = Counter(t for ts in rterms.values() for t in ts)
+    rterms = {n.id: _terms(_record_text(n.rec, descs)) for n in active}
+    df = Counter(t for n in pool for t in rterms[n.id])
     qterms = sorted(_terms(task))  # sorted: float sums independent of hash seed
     big_n = len(pool)
     score = {
         n.id: sum(math.log(1 + big_n / (1 + df[t])) for t in qterms if t in rterms[n.id]) for n in pool
     }
     want_tags = set(tags)
+
+    def tagged(n):
+        return not want_tags or bool(want_tags & set(n.rec.tags))
 
     def must(n):  # step 2
         if n.kind == "i" or (n.kind == "t" and n.state in ("doing", "blocked")) or (n.kind == "q" and n.open):
@@ -380,8 +392,7 @@ def pack_text(st, task: str, budget: int = 2000, view: str = "agent", legend: bo
         return n.rec.mark == "disputed" and not n.closed
 
     forced = sorted((n for n in pool if must(n)), key=_by_id)
-    scored = [n for n in pool if not must(n) and score[n.id] > 0
-              and (not want_tags or want_tags & set(n.rec.tags))]
+    scored = [n for n in pool if not must(n) and score[n.id] > 0 and tagged(n)]
     scored.sort(key=lambda n: (-score[n.id], core.sort_key(n.id)))  # step 3
 
     def expand(n):  # step 4: 1-hop needs:/basis record refs; closed t/g/q only when scored
@@ -389,9 +400,17 @@ def pack_text(st, task: str, budget: int = 2000, view: str = "agent", legend: bo
         return [d for d in deps if not (d.kind in "tgq" and d.closed and score[d.id] <= 0)]
 
     lead = _lead(legend)
+    if not stale:  # relevant stale records are named, never dropped silently
+        hidden = [n.id for n in active if n.stale and (
+            n.kind in "ir" or (tagged(n) and any(t in rterms[n.id] for t in qterms)))]
+        if hidden:
+            lead.append(_cmt("stale: " + " ".join(sorted(hidden, key=core.sort_key))))
     kv = {} if view == "agent" else {"view": view}
     avail = budget - _overhead(Header("pack", kv=kv), lead, len(active))
-    reserve = _reserve(["more: " + _cap(_worst_ids([n.id for n in scored]))])
+    forced_ids = {n.id for n in forced}
+    cands = [n.id for n in scored] + [d.id for n in forced + scored for d in expand(n)]
+    cands = [i for i in dict.fromkeys(cands) if i not in forced_ids]
+    reserve = _reserve(["more: " + _cap(_worst_ids(cands))])
     p, omitted = _select(st, forced, scored, avail, reserve, expand)  # steps 4-6
     trail = [_cmt("more: " + _cap(omitted))] if omitted else []  # step 7
     kv["n"] = "%d/%d" % (len(p.ids), len(active))
@@ -409,7 +428,8 @@ def render_records(nodes_or_lines, view: str = "agent", ents=None, header: Heade
     given, is rendered first (agent), as a `>` line (mixed/human) or a header item (json).
       agent: canonical lines (core.render_line).
       mixed: compact Markdown; `## entities` then one section per kind in KIND_ORDER.
-      human: readable Markdown; aliases replaced by their descriptions, labelled attributes.
+      human: readable Markdown; aliases replaced by their descriptions (keyed subjects read
+             `<description>: key=value`, see _subst), labelled attributes.
       json:  list of Line.to_dict(); Node items add state/active/superseded_by/stale/transitions.
     Within a section items keep their input order; headings are dropped from mixed/human
     (non-semantic grouping, replaced by kind sections); comments become `>` lines. The
@@ -523,18 +543,28 @@ def _human_item(ln: Line, sub) -> list:
     return out + ["  - " + sub(c) for c in ln.cont]
 
 
+# `$alias`, plus the `.` of a keyed subject (`$api.timeout=30s`, `$db.max_connections is ...`)
+_SUBJECT_RE = re.compile(r"\$([A-Za-z][A-Za-z0-9_-]*)(\.(?=[A-Za-z0-9_]))?")
+
+
 def _subst(text: str, descs: dict, seen=()) -> str:
     """Replace `$alias` by its description (recursively, cycle-safe) outside backtick spans;
-    undefined aliases lose the `$`."""
+    undefined aliases lose the `$`.
+
+    One rule keeps keyed subjects readable: a defined alias followed by `.<key>` becomes
+    `<description>: <key>` (`$api.timeout=30s` -> `inference API (FastAPI, router/api.py):
+    timeout=30s`). Every other use, a path prefix included, is replaced in place
+    (`$api/health` -> `inference API (FastAPI, router/api.py)/health`).
+    """
 
     def repl(m):
         a = "$" + m.group(1)
         if a in descs and a not in seen:
-            return _subst(descs[a], descs, seen + (a,))
-        return m.group(1)
+            return _subst(descs[a], descs, seen + (a,)) + (": " if m.group(2) else "")
+        return m.group(1) + (m.group(2) or "")
 
     parts = re.split(r"(`[^`]*`)", text or "")
-    return "".join(p if i % 2 else core.ALIAS_USE_RE.sub(repl, p) for i, p in enumerate(parts))
+    return "".join(p if i % 2 else _SUBJECT_RE.sub(repl, p) for i, p in enumerate(parts))
 
 
 def _render_json(items, header) -> str:

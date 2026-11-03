@@ -304,11 +304,12 @@ class Store:
                 self._depth -= 1
             return
         fh = None
-        try:
-            (self.dir / "cache").mkdir(parents=True, exist_ok=True)
-            fh = open(str(self.dir / "cache" / "lock"), "a+")
-        except OSError:
-            fh = None  # read-only checkout: proceed unlocked
+        if self.dir.is_dir():  # never create .adl/ just to read a directory without a store
+            try:
+                (self.dir / "cache").mkdir(exist_ok=True)
+                fh = open(str(self.dir / "cache" / "lock"), "a+")
+            except OSError:
+                fh = None  # read-only checkout: proceed unlocked
         try:
             if fh is not None and fcntl is not None:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
@@ -325,7 +326,7 @@ class Store:
         """Append canonical lines. Refuses anything that would not read back as the same lines."""
         for r in rendered:
             parts = r.split("\n")
-            if "\r" in r or any(not p.startswith("  ") for p in parts[1:]) or CTRL_RE.search(r.replace("\n", "")):
+            if "\r" in r or any(not p.startswith(" ") for p in parts[1:]) or CTRL_RE.search(r.replace("\n", "")):
                 raise AdlError("E_SYNTAX", "refusing to write a line that would not read back identically: %r" % r[:80])
         txt = read_text(self.mem) if self.mem.exists() else "@adl2 mem\n"
         if not txt.endswith("\n"):

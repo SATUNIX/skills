@@ -507,10 +507,17 @@ def parse_doc(text: str, path: str = "", allow_bare: bool = False, need_header: 
         raw = lines[idx]
         no = idx + 1
         try:
-            if raw.startswith("  ") and raw.strip():
+            if raw.startswith(" ") and raw.strip():
                 if prev is None or prev.typ not in ("rec", "ent"):
                     raise AdlError("E_SYNTAX", "continuation line without a record", no)
-                prev.cont.append(raw[2:].rstrip())
+                text = raw.strip()
+                first = text.split(" ", 1)[0]
+                if " " in text and (ID_RE.match(first) or PROV_RE.match(first) or ALIAS_RE.match(first)
+                                    or (allow_bare and BARE_RE.match(first))):
+                    # an accidentally indented record must not be silently merged into the previous one
+                    raise AdlError("E_SYNTAX", "indented line starts with %r: records must not be indented "
+                                   "(continuation lines must not start with an id or $alias)" % first, no)
+                prev.cont.append(text)
                 continue
             ln = parse_line(raw, no, allow_bare=allow_bare)
         except AdlError as e:
@@ -555,7 +562,7 @@ def render_line(ln: Line, with_status: bool = True) -> str:
     parts += render_attrs(ln)
     out = " ".join(parts)
     if ln.cont:
-        out += "\n" + "\n".join("  " + c for c in ln.cont)
+        out += "\n" + "\n".join(" " + c for c in ln.cont)  # one space: costs no extra token on BPE vocabularies
     return out
 
 

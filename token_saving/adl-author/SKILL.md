@@ -9,7 +9,7 @@ description: Author and rewrite persistent agent-consumed text in ADL v2. Use wh
 
 Persistent text keeps every task-relevant semantic unit with minimal ambiguity and tokens, in the mode its readers need.
 
-Tool: `adl2` = `python3 <skills>/adl/scripts/adl2.py`; exact path in the `AGENTS.md`/`CLAUDE.md` policy block; from a skill directory: `../adl/scripts/adl2.py`.
+Tool: `adl2` = `python3 <skills>/adl/scripts/adl2.py`; exact path in the `AGENTS.md`/`CLAUDE.md` policy block; run it from the project root, or pass `--root <project>`.
 Spec: `adl2 spec modes`, `adl2 spec grammar`, `adl2 spec kinds`, `adl2 spec attrs`, `adl2 spec compat`. Store writes: skill adl-memory-state.
 
 ## modes
@@ -36,13 +36,13 @@ i1 $rt MUST preserve request order per session [repo:router/queue.py] verify:tes
 r1 $rt MUST NOT log request bodies [user] verify:test:no_body_log why:bodies may contain secrets
 d1 enable vLLM automatic prefix caching [bench:apc-01] why:agent prompts share stable prefixes over:manual KV store (maintenance cost)
 p1 restart $api
-  1. systemctl stop api
-  2. wait until port 8443 is free
-  3. systemctl start api
+ 1. systemctl stop api
+ 2. wait until port 8443 is free
+ 3. systemctl start api
 f1 $api.timeout=30s [repo:router/config.toml]
 f2 hosts[2]{id,ip,role}:
-  h1,10.0.0.10,api
-  h2,10.0.0.11,worker
+ h1,10.0.0.10,api
+ h2,10.0.0.11,worker
 ```
 
 Encoding by information type:
@@ -136,7 +136,7 @@ Comment only non-obvious meaning, with a tag: `WHY INV SEC EDGE COMPAT PERF TODO
 
 ## validation
 
-- `adl2 lint FILE.md` (every `adl2` fence) or `adl2 lint FILE.adl`; `adl2 fmt --check FILE.adl`.
+- `adl2 lint FILE.md` (every `adl2` fence: parse + policy) or `adl2 lint FILE.adl` (`@adl2 mem`/`doc` files: the full store checks, e.g. `E_REF`, `E_DUP`, `E_CONFLICT`; several `mem` files named together are one store); `adl2 fmt --check FILE.adl`.
 - `adl2 stats OLD NEW` compares token counts when density is the goal.
 
 ## output

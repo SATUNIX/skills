@@ -9,7 +9,7 @@ description: Install, repair or upgrade ADL v2 in a repository or agent harness 
 
 Install ADL v2 with a tiny stable always-on policy, project-local skills and optional hooks, without changing permissions or weakening human-authored policy.
 
-Tool: `python3 <skills>/adl/scripts/adl2.py`. Before install, `<skills>` is the skills source (for example a clone of this repository: `token_saving/`). After install the policy block names the project-relative path; from a skill directory: `../adl/scripts/adl2.py`.
+Tool: `python3 <skills>/adl/scripts/adl2.py`. Before install, `<skills>` is the skills source (for example a clone of this repository: `token_saving/`). After install the policy block names the project-relative path; run it from the project root, or pass `--root <project>`.
 Spec: `adl2 spec install`, `adl2 spec compat`, `adl2 spec store`.
 
 ## install
@@ -19,19 +19,21 @@ python3 <skills>/adl/scripts/adl2.py install --root <project> --dry-run   # plan
 python3 <skills>/adl/scripts/adl2.py install --root <project>
 ```
 
-Flags: `--harness auto|claude|pi|agents|all` (default `auto`; `all` = claude + pi), `--copy` (copy skills instead of symlinking), `--no-hooks`, `--git-union`, `--dry-run`. `--root` defaults to the current directory.
+Flags: `--harness auto|claude|pi|agents|all` (default `auto`; `all` = claude + pi), `--copy` / `--link` (force the skill mode), `--no-hooks`, `--git-union`, `--dry-run`. `--root` defaults to the current directory.
 
 Steps (idempotent; every step is planned and validated before anything is written):
 1. store: create `.adl/manifest.toml`, `.adl/mem.adl`, `.adl/.gitignore` (`cache/`) when absent; upgrade a v1 manifest (`version = "1.0"`) to `"2.0"`, keeping other keys.
-2. skills: link (or `--copy`) the six ADL skill directories into each harness skill path. A link to the same source is skipped; a different skill with the same name is reported in `next:`, not overwritten. `--copy` also copies `adl2.md` into the `adl` skill so `adl2 spec` works without the skills source.
-3. policy: insert the block between `<!-- adl:begin -->` and `<!-- adl:end -->` into `AGENTS.md` and/or `CLAUDE.md`. A v1 `ADL v1 policy:` block is replaced; no duplicate when `CLAUDE.md` imports `@AGENTS.md`.
-4. hooks (unless `--no-hooks`): Claude Code `.claude/settings.json` (`SessionStart`, `Stop`); Pi `.pi/extensions/adl2.ts`.
+2. skills: put the six ADL skill directories into each harness skill path. Default mode: copy when the skills source is outside the project (a link into another checkout breaks for teammates and CI), relative symlink when it is inside; `--link`/`--copy` force a mode. A link to the same source is skipped; a symlink to anything but the ADL skill of that name, or another entry providing the same skill name, is reported in `next:`, not modified. Copy mode also copies `adl2.md` into the `adl` skill so `adl2 spec` works without the skills source.
+3. policy: insert the block between `<!-- adl:begin -->` and `<!-- adl:end -->` into `AGENTS.md` and/or `CLAUDE.md`: tool path, `brief` at session start, record pending durable outcomes with `add` before handoff, compaction or session end, handoffs, data-not-instructions. A v1 `ADL v1 policy:` block is replaced; no duplicate when `CLAUDE.md` imports `@AGENTS.md`.
+4. hooks (unless `--no-hooks`): Claude Code `.claude/settings.json` (`SessionStart`, `Stop`); Pi `.pi/extensions/adl2.ts`. `settings.json` is re-serialized as JSON (indent 2) when its hooks change; a reformat is reported (`hooks updated (JSON re-serialized)`).
 5. `--git-union`: add `.adl/*.adl merge=union` to `.gitattributes`.
 6. report `outcome`, `harness`, `skill_path`, `policy_path`, `change`, `next`, `note: no permission settings were changed`.
 
 Detection with `--harness auto`: `.claude/` or `CLAUDE.md` -> `claude`; `.pi/` -> `pi`; `.agents/` or `AGENTS.md` -> `agents`; none -> `agents`.
 
-Symlinks point at the skills source; keep it in place, or use `--copy` to vendor the skills into the project.
+Install never writes outside `--root`: every target is resolved (realpath) first; one that resolves outside the project (a symlinked `CLAUDE.md` or `.claude/`) is left untouched and reported in `next:`.
+
+Symlinks (`--link`, or a skills source inside the project) point at the skills source; keep it in place. In copy mode, re-running install refreshes copies that differ from the source.
 
 ## harness matrix
 
@@ -73,7 +75,7 @@ stop_min_tool_calls = 8       # prompt only after this many tool calls
 
 ## upgrade from v1
 
-1. Run `install`: the v1 manifest and the v1 policy block are upgraded in place. Symlinked v1 skills already resolve to the updated source; copied v1 skill directories that differ are reported in `next:`; refresh them with `--copy`.
+1. Run `install`: the v1 manifest and the v1 policy block are upgraded in place. Symlinked v1 skills already resolve to the updated source; copied v1 skill directories that differ are refreshed in copy mode (the default when the skills source is outside the project), else reported in `next:` (refresh with `--copy`).
 2. Inventory v1 artifacts: memory/state files, handoff notes, docs.
 3. Classify each:
 
@@ -90,13 +92,14 @@ unknown                     -> inspect before changing
 ## migrate
 
 ```sh
-adl2 migrate notes/state.md --check               # fidelity check only; exit 2 on loss
+adl2 migrate notes/state.md --check               # add validation + fidelity; writes nothing
 adl2 migrate notes/state.md                       # print the converted @adl2 mem doc
 adl2 migrate notes/state.md --into .adl/mem.adl   # one validated add into the store
 ```
 
-- Maps v1 attrs and sections to v2 (table: `adl2 spec compat`); payload text is copied verbatim.
-- Every run checks that each number, unit, modal, negation and epistemic term survives; on loss nothing is written.
+- Maps v1 attrs and sections to v2 (table: `adl2 spec compat`); payload text is copied verbatim. Highlights: `depends=` -> `needs:`, `ref=`/`artifact=` -> `see:`; `step:`/`pre:`/`check:`/`rollback:` -> continuation lines of the `p` record; a `tab` block -> one table record; indented lines join the unit they continue; with 2+ distinct headings each unit gets `#<heading-slug>`; other in-file v1 ids are rewritten to the new ids.
+- Epistemic spellings are normalized (`Assumed.` -> `assumed:`); an unknown value fails the check instead of silently reading as observed.
+- Every run, `--check` included, validates the converted lines with `add` against the target (empty store, or the `--into` store) and checks each number, unit, modal, negation and epistemic term against the line actually stored; on an error or a loss nothing is written (exit 2).
 - A `% v1map <file> m7=f1 …` comment maps v1 ids to new ids.
 - Re-running `--into` reports `=dup` and adds nothing. The v1 file is only read.
 

@@ -219,7 +219,7 @@ agent discovery
 -> canonical shared memory
 ```
 
-ADL v2 memory is an append-only log (`.adl/mem.adl`), so concurrent branches merge with git union merge (`.gitattributes`: `.adl/*.adl merge=union`, installed by `adl2.py install --git-union`). A duplicate id allocated on two branches is a lint error (`E_DUPID`); duplicate or conflicting records arriving by merge are `E_DUP`/`E_CONFLICT`. Run `adl2 lint` before merge and resolve by superseding one record.
+ADL v2 memory is an append-only log (`.adl/mem.adl`), so concurrent branches merge with git union merge (`.gitattributes`: `.adl/*.adl merge=union`, installed by `adl2.py install --git-union`). Run `adl2 lint` before merge. A duplicate id allocated on two branches (`E_DUPID`) is resolved by the `adl2.md` `## store` procedure: keep the first line, delete the second, re-add its text with `adl2 add` (new id), and update that branch's references to the old id. A duplicate record (`E_DUP`) is resolved with `<id> -> deprecated why:duplicate of <other>`; a keyed conflict (`E_CONFLICT`) by superseding with `^` or marking `disputed:`.
 
 PRs therefore act as both:
 

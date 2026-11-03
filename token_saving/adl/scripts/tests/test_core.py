@@ -321,11 +321,11 @@ class TestContinuation(CoreCase):
         self.assertEqual(f1.body, "hosts[2]{name,port}:")
         self.assertEqual(f1.cont, ["a,8080", "\"b,c\",8443"])
         self.assertEqual(len(doc.records()), 2)
-        self.assertEqual(core.render_line(f1), "f1 hosts[2]{name,port}: [e1]\n  a,8080\n  \"b,c\",8443")
+        self.assertEqual(core.render_line(f1), "f1 hosts[2]{name,port}: [e1]\n a,8080\n \"b,c\",8443")
 
     def test_continuation_is_opaque_and_keeps_extra_indent(self):
         doc = core.parse_doc("@adl2 mem\np1 restart see:ops/r.md\n  1. drain [e1] #x `open\n    nested\n")
-        self.assertEqual(doc.lines[0].cont, ["1. drain [e1] #x `open", "  nested"])
+        self.assertEqual(doc.lines[0].cont, ["1. drain [e1] #x `open", "nested"])  # canonical: one space, no nesting
         self.assertEqual(doc.lines[0].basis, [])
 
     def test_entity_continuation(self):

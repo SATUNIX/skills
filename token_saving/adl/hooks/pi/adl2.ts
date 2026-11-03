@@ -9,7 +9,9 @@
  *
  * It never writes memory: only the agent records durable facts with `adl2.py add`.
  * The hook only reads .adl/ and writes .adl/cache/. Pi has no blocking end-of-turn
- * event here, so there is no stop nudge; the AGENTS.md policy block covers that.
+ * event here, so there is no stop nudge; instead the AGENTS.md policy block that install
+ * writes says "Before handoff, context compaction or session end: record pending durable
+ * outcomes with `add`".
  *
  * Pi loads project-local extensions (.pi/extensions/) only after the project is trusted.
  */

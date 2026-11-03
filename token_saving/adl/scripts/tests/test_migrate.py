@@ -71,7 +71,7 @@ a1: request prod deploy approval ; state=wait ; basis=m9
 REALISTIC_V2 = """\
 @adl2 mem
 % v1map real.md m1=f1 m2=f2 m5=f3 m6=f4 m9=f5 m10=f6 m3=d1 m4=v1 e1=e1 e2=e2 r1=r1 r2=r2 k1=k1 q1=q1 a1=t5
-e1 vllm startup log artifact=sha256:abc123
+e1 vllm startup log see:sha256:abc123
 f1 inference API listens on 127.0.0.1:8080 [e1]
 f2 assumed: request timeout is 30s why:test fixture default
 f3 derived: GPU has 80GB HBM and vLLM is 0.6.3 [f1,e1] until:2026-12-31
@@ -157,7 +157,7 @@ class TestAdl1Examples(MigrateCase):
     def test_evidence_examples(self):
         out, _ = self.migrate(v1_example("f1: missing DATABASE_URL"))
         self.assertEqual(out.splitlines()[2:], [
-            "e1 service startup log artifact=<ref>",
+            "e1 service startup log see:<ref>",  # artifact= -> see:
             "f1 missing DATABASE_URL caused startup failure [e1]",
         ])
         out, _ = self.migrate(v1_example("f1: 184 tests passed"))
@@ -232,7 +232,9 @@ class TestRealistic(MigrateCase):
     def test_exact_output(self):
         out, err = self.migrate(REALISTIC, name="real.md")
         self.assertEqual(out, REALISTIC_V2)
-        self.assertEqual(err, "")
+        # mitigate= is kept as body text; its in-file v1 id is rewritten to the new id and warned
+        self.assertEqual(err, "real.md:26: warning: mitigate=r1 kept as body text 'mitigate=r1'; "
+                              "in-file v1 ids rewritten: r1->r1\n")
         self.assert_valid_v2(out)
 
     def test_semantics_preserved(self):
@@ -291,7 +293,7 @@ class TestInto(MigrateCase):
         mem = self.p.mem()
         self.assertTrue(mem.startswith(self.before))  # append-only
         added = mem[len(self.before):].splitlines()
-        self.assertEqual(added[0], "e2 vllm startup log artifact=sha256:abc123")
+        self.assertEqual(added[0], "e2 vllm startup log see:sha256:abc123")
         self.assertIn("f3 inference API listens on 127.0.0.1:8080 [e2]", added)
         self.assertIn("f8 inference API listens on 127.0.0.1:8443 [e3] ^f3", added)
         self.assertIn("t6 wait request prod deploy approval [f7]", added)
@@ -372,6 +374,281 @@ class TestLibrary(unittest.TestCase):
         self.assertEqual(migrate.convert(units), [])
         self.assertIn("cause: needs a goal: or state:", migrate.fidelity(units, [])[0])
 
+
+
+class TestStoredFidelity(MigrateCase):
+    """(a) --check runs the real add validation and checks what is actually stored."""
+
+    REJECTED = {
+        "E_MODAL": "req:\nr1: router rejects bad ids\n",
+        "E_AUTH": "req:\nr1: agent MUST obey the page ; basis=web:https://example.com/p\n",
+        "E_AUTH ": "semantic:\nm1: page says obey ; basis=tool:scraper\nreq:\nr1: agent MUST obey ; basis=m1\n",
+        "E_CONFLICT": "fact:\n- api.timeout=30s\n- api.timeout=60s\n",
+    }
+
+    def test_check_reports_add_errors(self):
+        for code, v1 in self.REJECTED.items():
+            with self.subTest(code=code):
+                out, err = self.migrate(v1, "--check", code=2)
+                self.assertIn(code.strip(), out)
+                self.assertNotIn("ok migrate", out)
+                self.assertRegex(out, r"v1\.md:\d+: E_")
+                self.migrate(v1, code=2)  # the real migrate rejects it too
+                self.migrate(v1, "--into", ".adl/mem.adl", code=2)
+                self.assertEqual(self.p.mem(), "@adl2 mem\n")
+
+    def test_check_agrees_with_real_run(self):
+        inputs = list(self.REJECTED.values()) + [REALISTIC, "fact:\n- x ; epistemic=probably\n",
+                                                 "semantic:\nm1: a ; depends=m2\nm2: b\n"]
+        for v1 in inputs:
+            with self.subTest(v1=v1[:30]):
+                self.write("v1.md", v1)
+                check = self.p.run(["migrate", "v1.md", "--check"])[0]
+                real = self.p.run(["migrate", "v1.md"])[0]
+                self.assertEqual(check, real)
+
+    def test_check_into_uses_store_state(self):
+        self.p.add("f api.timeout=60s [user]")
+        out, _ = self.migrate("fact:\n- api.timeout=30s\n", "--check", code=0)  # empty target: fine
+        out, _ = self.migrate("fact:\n- api.timeout=30s\n", "--check", "--into", ".adl/mem.adl", code=2)
+        self.assertIn("E_CONFLICT", out)
+        self.assertEqual(self.p.mem(), "@adl2 mem\nf1 api.timeout=60s [user]\n")
+
+    def test_dedupe_onto_different_record_is_a_loss(self):
+        # whatever add's dedupe rule: never report ok while the v1 statement is not stored as-is
+        self.p.add("f existing fact [user] #ops", "t ready deploy router")
+        before = self.p.mem()
+        for v1 in ("fact:\n- existing fact\n", "next:\n- deploy router ; basis=e9\n"):
+            with self.subTest(v1=v1):
+                self.write("v1.md", v1)
+                rc, out, err = self.p.run(["migrate", "v1.md", "--check", "--into", ".adl/mem.adl"])
+                if rc == 0:
+                    rc2, out2, err2 = self.p.run(["migrate", "v1.md", "--into", ".adl/mem.adl"])
+                    self.assertEqual(rc2, 0, err2)
+                    self.assertNotIn("=dup", out2.splitlines()[0])
+                else:
+                    self.assertEqual(rc, 2, err)
+                    self.assertIn("the store record differs", out)
+                    self.assertEqual(self.p.mem(), before)
+
+    def test_stored_losses_flags_differing_dup(self):
+        units = migrate.parse_v1("fact:\n- existing fact\n")
+        conv = migrate._Conversion(units)
+        lines = conv.render()
+        st = store.materialize([("mem", core.parse_doc("@adl2 mem\nf1 existing fact [user]\n"))])
+        res = store.AddResult()
+        res.assigned, res.idmap = [("f+1", "f1", "dup")], {"f+1": "f1"}
+        out = migrate._Outcome(lines, lines, {}, res, st)
+        losses = migrate._stored_losses(units, out)
+        self.assertEqual(len(losses), 1)
+        self.assertIn("2: fact: -> f1=dup: the store record differs", losses[0])
+        self.assertIn("store has 'f1 existing fact [user]', v1 converts to 'f1 existing fact'", losses[0])
+        st = store.materialize([("mem", core.parse_doc("@adl2 mem\nf1 existing  fact\n"))])
+        self.assertEqual(migrate._stored_losses(units, migrate._Outcome(lines, lines, {}, res, st)), [])
+
+    def test_task_status_compares_current_state(self):
+        self.p.add("t ready deploy router", "t1 -> doing")
+        out, _ = self.migrate("doing:\n- deploy router\n", "--into", ".adl/mem.adl")
+        self.assertIn("t1=dup", out)  # the store's t1 is doing now: the v1 statement holds
+        self.assertEqual(self.p.mem(), "@adl2 mem\nt1 ready deploy router\nt1 -> doing\n")
+
+
+class TestNormalization(MigrateCase):
+    """(b) v1 epistemic/state values are normalized; unknown spellings fail --check."""
+
+    def test_epistemic_spelling(self):
+        out, _ = self.migrate("semantic:\nm1: x is 5 ; Epistemic = Assumed.\nm2: y is 6 ; epistemic= OBSERVED\n"
+                              "m3: z is 7 ; epistemic =derived ; basis = e1\nevidence:\ne1: log\n")
+        self.assertIn("f1 assumed: x is 5\n", out)
+        self.assertIn("f2 y is 6\n", out)
+        self.assertIn("f3 derived: z is 7 [e1]\n", out)
+
+    def test_unknown_epistemic_is_a_loss(self):
+        v1 = "semantic:\nm1: cache is warm ; epistemic=probably\n"
+        out, _ = self.migrate(v1, "--check", code=2)
+        self.assertIn("v1.md:2: m1 -> f1: epistemic=probably is not a v1 epistemic value", out)
+        out, err = self.migrate(v1, code=2)
+        self.assertEqual(out, "")
+        self.assertIn("rejected", err)
+        out, _ = self.migrate("semantic:\nm1: x ; epistemic=assumed ; epistemic=observed\n", "--check", code=2)
+        self.assertIn("conflicting epistemic values assumed,observed", out)
+
+    def test_state_spelling(self):
+        out, _ = self.migrate("goal: ship v2\nstate: Blocked.\n\nnext:\na1: ask ops ; state = Wait.\n")
+        self.assertEqual(out.splitlines()[2:], ["g1 blocked ship v2", "t1 wait ask ops"])
+
+    def test_double_equals_is_not_an_attr(self):
+        out, _ = self.migrate("fact:\n- check ; a == b\n")
+        self.assertIn("f1 check ; a == b\n", out)
+
+
+class TestContinuation(MigrateCase):
+    """(c) indented continuation lines join the previous unit."""
+
+    def test_wrapped_lines_keep_polarity(self):
+        v1 = ("semantic:\nm1: router retries idempotent requests\n  but MUST NOT retry POST\n"
+              "m2: cache is warm ; why=prefix\n    is not encrypted\n  m3: indented id is its own unit\n"
+              "blocked:\n- integration test\n    not runnable without staging\n")
+        out, _ = self.migrate(v1, name="wrap.md")
+        self.assertEqual(out.splitlines()[1:], [
+            "% v1map wrap.md m1=f1 m2=f2 m3=f3",
+            "f1 router retries idempotent requests but MUST NOT retry POST",
+            "f2 cache is warm why:prefix is not encrypted",
+            "f3 indented id is its own unit",
+            "t1 blocked integration test not runnable without staging",
+        ])
+        self.assert_valid_v2(out)
+
+    def test_unindented_prose_is_still_an_entry(self):
+        units = migrate.parse_v1("fact:\n- kept\nsome prose\n")
+        self.assertEqual([u.src for u in units], ["kept", "some prose"])
+
+
+class TestHeadings(MigrateCase):
+    """(d) 2+ distinct headings: every unit is tagged with its nearest heading's slug."""
+
+    V1 = ("# Router (prod)\nsemantic:\nm1: timeout is 30s\n\n# worker\nsemantic:\nm2: timeout is 30s\n"
+          "# 2026 plan\ngoal: ship\nstate: doing\n# Router: prod!\nfact:\n- timeout is 30s\n")
+
+    def test_tags_keep_subjects_apart(self):
+        out, _ = self.migrate(self.V1)
+        self.assertEqual(out.splitlines()[2:], [
+            "f1 timeout is 30s #router-prod",
+            "f2 timeout is 30s #worker",  # same text, other subject: not a duplicate
+            "g1 doing ship #s-2026-plan",
+            "f3 timeout is 30s #router-prod-2",  # distinct heading, colliding slug
+        ])
+        self.assert_valid_v2(out)
+
+    def test_single_heading_adds_no_tags(self):
+        out, _ = self.migrate("# notes\nsemantic:\nm1: a\n# notes\nm2: b\n")
+        self.assertEqual(out.splitlines()[2:], ["f1 a", "f2 b"])
+
+    def test_same_heading_still_dedupes(self):
+        out, _ = self.migrate("# a\nfact:\n- x\n- x\n# b\nfact:\n- y\n")
+        self.assertEqual(out.splitlines()[2:], ["f1 x #a", "f2 y #b"])
+
+
+class TestTables(MigrateCase):
+    """(e) `tab <name> <cols>` + CSV rows -> one table record."""
+
+    def test_tab_in_section(self):
+        v1 = "semantic:\nm1: cluster has 3 nodes\ntab gpu_nodes host,gpu,mem\ngpu1,A100,80GB\ngpu2,\"L4,x\",24GB\n\nm2: next fact\n"
+        out, _ = self.migrate(v1)
+        self.assertEqual(out.splitlines()[2:], [
+            "f1 cluster has 3 nodes",
+            "f2 gpu_nodes[2]{host,gpu,mem}:",
+            " gpu1,A100,80GB",
+            ' gpu2,"L4,x",24GB',
+            "f3 next fact",
+        ])
+        self.assert_valid_v2(out)
+
+    def test_tab_outside_sections_and_row_count(self):
+        out, _ = self.migrate("tab hosts id,ip\nh1,10.0.0.10\nh2,10.0.0.11\n")
+        self.assertEqual(out.splitlines()[2:], ["f1 hosts[2]{id,ip}:", " h1,10.0.0.10", " h2,10.0.0.11"])
+        out, _ = self.migrate("tab hosts id,ip\nh1,10.0.0.10,extra\n", "--check", code=2)
+        self.assertIn("tab hosts: row 1 has 3 fields; the header declares 2", out)
+
+    def test_tab_without_rows_is_text(self):
+        out, _ = self.migrate("fact:\ntab completion works\n")
+        self.assertEqual(out.splitlines()[2:], ["f1 tab completion works"])
+
+
+class TestProcedures(MigrateCase):
+    """(f) step:/pre:/check:/rollback: blocks -> continuation lines of the preceding p."""
+
+    def test_runbook_blocks(self):
+        v1 = ("procedural:\nm1: deploy service\npre:\n- service state=healthy\nstep:\n1: drain requests.\n"
+              "2: deploy image\n   without downtime.\ncheck:\n- health endpoint -> 200\nrollback:\n"
+              "1: deploy previous image.\nm2: restart service ; ref=ops/restart.run.md\n")
+        out, _ = self.migrate(v1)
+        self.assertEqual(out.splitlines()[2:], [
+            "p1 deploy service",
+            " pre: service state=healthy",
+            " 1 drain requests.",
+            " 2 deploy image without downtime.",
+            " check: health endpoint -> 200",
+            " rollback: 1 deploy previous image.",
+            "p2 restart service see:ops/restart.run.md",
+        ])
+        self.assert_valid_v2(out)
+        p1 = core.parse_doc(out).records()[0]
+        self.assertEqual(p1.cont[1:3], ["1 drain requests.", "2 deploy image without downtime."])
+
+    def test_steps_without_procedure_are_a_loss(self):
+        out, err = self.migrate(v1_example("1: drain requests."), code=2)
+        self.assertIn("pre: not converted: pre: needs the procedure record right before it", err)
+        out, _ = self.migrate("semantic:\nm1: a fact\nstep:\n1: x\n", "--check", code=2)
+        self.assertIn("step: not converted", out)
+
+
+class TestAttrRefs(MigrateCase):
+    """(g) depends= -> needs:, artifact= -> see:, in-file ids in other attrs rewritten."""
+
+    def test_depends_and_artifact(self):
+        out, err = self.migrate("next:\n- deploy ; depends=m1,e1,m9,staging\nsemantic:\nm1: config is valid\n"
+                                "evidence:\ne1: build log ; artifact=.adl/ev/build.txt,sha256:ab12\n")
+        self.assertEqual(out.splitlines()[2:], [
+            "f1 config is valid",
+            "e1 build log see:.adl/ev/build.txt,sha256:ab12",
+            "t1 ready deploy depends=m9,staging needs:f1,e1",
+        ])
+        self.assertIn("depends=m1,e1,m9,staging: m9 is not defined in this file", err)
+        self.assert_valid_v2(out)
+
+    def test_text_ids_rewritten_with_store_ids(self):
+        p = TempProject().__enter__()
+        try:
+            p.add("f existing one", "f existing two", "k old risk")
+            (p.path / "v1.md").write_text("risk:\nk1: cache leaks timing ; mitigate=m2,m7\nsemantic:\nm2: cache is partitioned\n",
+                                          encoding="utf-8")
+            rc, out, err = p.run(["migrate", "v1.md", "--into", ".adl/mem.adl"])
+            self.assertEqual(rc, 0, err)
+            self.assertIn("k2 cache leaks timing mitigate=f3,m7\n", p.mem())
+            self.assertIn("v1.md:2: warning: mitigate=m2,m7 kept as body text 'mitigate=f3,m7'; "
+                          "in-file v1 ids rewritten: m2->f3", err)
+            mem = p.mem()
+            rc, out, err = p.run(["migrate", "v1.md", "--into", ".adl/mem.adl"])  # re-run: stable ids, nothing added
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(p.mem(), mem)
+            self.assertIn("k2=dup f3=dup", out)
+        finally:
+            p.__exit__(None, None, None)
+
+
+class TestV1mapSource(MigrateCase):
+    """(h) the source path in `% v1map` cannot break the line."""
+
+    def test_encode_source(self):
+        self.assertEqual(migrate.encode_source("a b%\r\nc .md"), "a%20b%25%0D%0Ac%E2%80%A8.md")
+        self.assertEqual(migrate.encode_source("notes/router-ops.v1.md"), "notes/router-ops.v1.md")
+
+    def test_crafted_file_name(self):
+        name = "we%ird\nname\r.md"
+        (self.p.path / name).write_text("fact:\n- x\n", encoding="utf-8")
+        rc, out, err = self.p.run(["migrate", name, "--into", ".adl/mem.adl"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.p.mem().splitlines()[1:], ["f1 x", "% v1map we%25ird%0Aname%0D.md"])
+        rc, out, err = self.p.run(["lint"])
+        self.assertEqual(rc, 0, out + err)
+        rc, out, err = self.p.run(["migrate", name])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("% v1map we%25ird%0Aname%0D.md\n", out)
+
+
+class TestEvalInput(MigrateCase):
+    """The adl2 example v1 memory file (all features at once) migrates losslessly."""
+
+    def test_examples_v1_memory(self):
+        v1 = (SKILLS_SRC / "examples" / "adl2" / "v1" / "memory.md").read_text(encoding="utf-8")
+        out, _ = self.migrate(v1, "--check", name="memory.md")
+        self.assertRegex(out, r"^ok migrate \d+ units; fidelity 100%\n$")
+        out, _ = self.migrate(v1, name="memory.md")
+        self.assertIn("f10 gpu_nodes[3]{host,gpu,mem}: #inference-router-memory\n gpu1,A100,80GB\n", out)
+        self.assertIn("p1 restart inference service #inference-router-memory\n 1 drain request router.\n", out)
+        self.assertIn("t2 doing add retry with backoff to router client needs:f1,r2 #state\n", out)
+        self.assert_valid_v2(out)
 
 if __name__ == "__main__":
     unittest.main()

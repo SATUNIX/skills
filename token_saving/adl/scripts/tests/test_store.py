@@ -263,7 +263,7 @@ class TestPolicy(StoreCase):
         self.rejected("f hosts[2]{name,port}:", "  a,8080", code="E_TABLE")
         self.rejected("f hosts[1]{name,port}:", "  a", code="E_TABLE")
         self.assertEqual(self.add("f hosts[2]{name,port}:", "  a,8080", '  "b,c",8443')[0], "ok f1\n")
-        self.assertEqual(self.body(), ["f1 hosts[2]{name,port}:", "  a,8080", '  "b,c",8443'])
+        self.assertEqual(self.body(), ["f1 hosts[2]{name,port}:", " a,8080", ' "b,c",8443'])
 
     def test_malformed_line_is_syntax_error(self):
         rc, out, err = self.p.run(["add", "hello world"])

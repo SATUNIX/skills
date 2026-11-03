@@ -8,13 +8,16 @@ Spec: token_saving/adl2.md ## tool (lint codes, exit codes), ## grammar, ## stat
 What is checked:
 - store (no FILE, or FILE is a store's .adl/mem.adl or .adl/hist.adl): parse each file (a
   file that fails is reported and skipped, and store-level checks then wait for a clean
-  parse), per-line policy (store.check_line_policy: E_MODAL E_AUTH E_TABLE W_INJECT
-  W_WIDEN), materialization (E_DUPID, E_REF), basis/needs/see ids and aliases (E_REF),
-  lifecycle states (E_STATUS), keyed conflicts (E_CONFLICT), duplicate active records
-  (E_DUP), W_NOBASIS, W_STALE, W_ALIAS, W_MINOR.
-- `.adl` file: parse + policy; an `@adl2 mem` file also gets the intra-file checks
-  (materialization, refs, states).
-- message file: parse + policy; refs and `base:` are checked by `msg check`.
+  parse), per-line policy against the materialized state (store.check_line_policy: E_MODAL
+  E_AUTH (transitive through record basis) E_TABLE W_INJECT W_WIDEN, transitions included),
+  materialization (E_DUPID, E_REF), basis/needs/see ids and aliases (E_REF), lifecycle
+  states (E_STATUS), keyed conflicts (E_CONFLICT), duplicate active records (E_DUP),
+  W_NOBASIS, W_STALE, W_ALIAS, W_MINOR.
+- `.adl` file with an `@adl2 mem` or `@adl2 doc` header: the same checks, within the file.
+  Several `mem` files named together are one store, materialized in argument order with
+  any file named hist.adl first (e.g. `lint mem.adl hist.adl`); each `doc` file is its own.
+- message and pack files: parse + policy; message refs and `base:` are checked by
+  `msg check`.
 - `.md` file: every fenced block whose info string is adl2: parse + policy. Blocks are
   illustrative fragments, so refs to records outside the block are not errors.
 """
@@ -77,15 +80,22 @@ def _parse(text: str, path: str, rep: _Report, offset: int = 0, need_header: boo
     return doc
 
 
-def _policy(doc, path: str, rep: _Report, offset: int = 0):
-    """store.check_line_policy on every record/entity line; counts records."""
+def _policy(doc, path: str, rep: _Report, offset: int = 0, st=None):
+    """store.check_line_policy on every record/entity/transition line against `st` (the
+    materialized state: E_AUTH follows record-id basis); counts records."""
     for ln in doc.lines:
-        if ln.typ in ("rec", "ent"):
-            rep.records += 1
+        if ln.typ in ("rec", "ent", "tr"):
+            if ln.typ != "tr":
+                rep.records += 1
             res = store.AddResult()
-            store.check_line_policy(ln, res)
+            store.check_line_policy(ln, res, st)
             for e in res.errors + res.warnings:
                 rep.add(e, path, offset)
+
+
+def _own_state(doc, today=None):
+    """State of one parsed doc for policy context only (its errors are not reported)."""
+    return store.materialize([("mem", doc)], today)
 
 
 def _refs(docs, st, rep: _Report):
@@ -111,25 +121,49 @@ def _refs(docs, st, rep: _Report):
                     rep.add(AdlError("E_STATUS", "%s -> %s: only t/g take task states; use stale/deprecated/retracted/done/cancelled" % (ln.id, ln.state), ln.lineno), path)
 
 
-def _intra(docs, rep: _Report, today=None):
-    """Materialize the docs; report materialization errors, refs and states. Returns state."""
+def _check_group(docs, rep: _Report, today=None, clean: bool = True):
+    """Check docs [(src, path, doc)] as one store: policy against their materialized state;
+    when every member parsed (`clean`), also materialization errors (E_DUPID, E_REF), refs
+    and states, and the active-set checks."""
     st = store.materialize([(src, doc) for src, _, doc in docs], today)
+    for _, path, doc in docs:
+        _policy(doc, path, rep, st=st)
+    if not clean:
+        return st
     for e in st.errors:
         rep.add(e, e.path)
     _refs(docs, st, rep)
+    where = {}
+    for _, path, doc in docs:
+        for ln in doc.lines:
+            if ln.typ in ("rec", "ent"):
+                where.setdefault(ln.id, path)  # first definition wins, as in materialize
+    _semantic(st, where, rep)
     return st
 
 
 # ---------------------------------------------------------------- store-level checks
 
 
-def _semantic(st, paths: dict, rep: _Report):
-    """Active-set checks: E_CONFLICT, E_DUP, W_NOBASIS, W_STALE, W_ALIAS (## semantics)."""
+def _dup_of(n, earlier):
+    """E_DUP = the store's dedupe rule (store.subsumes, ## semantics): an earlier active record
+    with the same kind/mark/body/cont (and t/g status) already states everything `n` states."""
+    for o in earlier:
+        if n.kind in core.STATUS_KINDS and o.status != n.status:
+            continue
+        if store.subsumes(o.rec, n.rec):
+            return o.id
+    return None
+
+
+def _semantic(st, where: dict, rep: _Report):
+    """Active-set checks: E_CONFLICT, E_DUP, W_NOBASIS, W_STALE, W_ALIAS (## semantics).
+    `where` maps a record/entity id to the path that defines it."""
     pos = {rid: i for i, rid in enumerate(st.order)}
     active = sorted((n for n in st.nodes.values() if n.active), key=lambda n: pos[n.id])
 
     def at(code, n, msg):
-        rep.add(AdlError(code, msg, n.rec.lineno), paths[n.src])
+        rep.add(AdlError(code, msg, n.rec.lineno), where.get(n.id, ""))
 
     for key, nodes in sorted(st.keyed_active().items()):
         nodes = sorted((n for n in nodes if n.rec.mark != "disputed"), key=lambda n: pos[n.id])
@@ -139,18 +173,15 @@ def _semantic(st, paths: dict, rep: _Report):
             if others:
                 at("E_CONFLICT", n, "%s %s=%s conflicts with active %s; supersede with ^ or mark disputed:" % (
                     n.id, key, val, ", ".join("%s (%s)" % (o.id, o.rec.keyed()[1]) for o in others)))
-    first = {}
+    seen = {}
     for n in active:
-        r = n.rec
         if n.kind in "tgq" and n.closed:
             continue
-        kv = r.keyed()
-        k = (n.kind, core.norm_text(r.body), r.mark, core.norm_value(kv[1]) if kv else None,
-             (r.date, tuple(r.see())) if n.kind in "ev" else None, tuple(c.strip() for c in r.cont))  # = store._find_dup
-        if k in first:
-            at("E_DUP", n, "%s duplicates active %s" % (n.id, first[k]))
-        else:
-            first[k] = n.id
+        k = store._dup_key(n.rec)
+        dup = _dup_of(n, seen.get(k, []))
+        if dup:
+            at("E_DUP", n, "%s duplicates active %s (resolve: %s -> deprecated why:duplicate of %s)" % (n.id, dup, n.id, dup))
+        seen.setdefault(k, []).append(n)
     for n in active:
         if n.rec.mark == "derived" and not n.rec.basis:
             at("W_NOBASIS", n, "%s is derived: but cites no [basis]" % n.id)
@@ -215,23 +246,20 @@ def alias_suggestions(st, active) -> list:
 
 
 def _lint_store(s: store.Store, today, rep: _Report):
-    docs, paths, clean = [], {}, True
+    docs, clean = [], True
     for src, p in (("hist", s.hist), ("mem", s.mem)):
         if not p.exists():
             continue
         rel = "%s/%s" % (store.ADL_DIR, p.name)
-        paths[src] = rel
-        doc = _parse(p.read_text(encoding="utf-8"), rel, rep)
+        doc = _parse(store.read_text(p), rel, rep)
         if doc is None:
             clean = False
             continue
         if doc.header.typ != "mem":
             rep.add(AdlError("E_SYNTAX", "store file header type must be mem, got %s" % doc.header.typ, 1), rel)
             clean = False
-        _policy(doc, rel, rep)
         docs.append((src, rel, doc))
-    if clean:
-        _semantic(_intra(docs, rep, today), paths, rep)
+    _check_group(docs, rep, today, clean)
 
 
 # ---------------------------------------------------------------- files
@@ -263,22 +291,70 @@ def adl2_blocks(text: str) -> list:
     return out
 
 
-def _lint_text(text: str, path: str, rep: _Report):
-    if path.endswith(".md"):
-        for fence_no, block in adl2_blocks(text):
-            doc = _parse(block, path, rep, fence_no, need_header=block.startswith("@adl"))
-            if doc is not None:
-                _policy(doc, path, rep, fence_no)
+def _lint_md(text: str, path: str, rep: _Report):
+    for fence_no, block in adl2_blocks(text):
+        doc = _parse(block, path, rep, fence_no, need_header=block.startswith("@adl"))
+        if doc is not None:
+            _policy(doc, path, rep, fence_no, _own_state(doc))
+
+
+def _header_type(text: str):
+    """Header type of a file that failed to parse, when its header itself is valid."""
+    try:
+        return core.parse_header(text.split("\n", 1)[0]).typ
+    except AdlError:
+        return None
+
+
+def _is_hist(path: str) -> bool:
+    return Path(path).name == store.HIST
+
+
+def _lint_one(doc, path: str, rep: _Report, today=None):
+    """A parsed non-store file: mem/doc -> store checks within the file; else policy."""
+    if doc.header.typ in ("mem", "doc"):
+        _check_group([("hist" if _is_hist(path) else "mem", path, doc)], rep, today)
         return
-    doc = _parse(text, path, rep)
-    if doc is None:
-        return
-    _policy(doc, path, rep)
-    if doc.header.typ == "mem":
-        _intra([("mem", path, doc)], rep)
-    elif doc.header.is_msg:
+    _policy(doc, path, rep, st=_own_state(doc, today))
+    if doc.header.is_msg:
         rep.notes.append("%s: note: msg:%s linted for syntax and policy only; refs and base: are checked by `adl2.py msg check %s`" % (
             path, doc.header.msgtype, path))
+
+
+def _lint_text(text: str, path: str, rep: _Report, today=None):
+    if path.endswith(".md"):
+        _lint_md(text, path, rep)
+        return
+    doc = _parse(text, path, rep)
+    if doc is not None:
+        _lint_one(doc, path, rep, today)
+
+
+def _lint_files(files, today, rep: _Report):
+    """Lint named files. Store files lint their store (once per store); `mem` files named
+    together are one store (hist.adl first, then argument order)."""
+    roots, mems, clean = set(), [], True
+    for f in files:
+        root = _store_root(f)
+        if root is not None:
+            if root not in roots:
+                roots.add(root)
+                _lint_store(store.Store.open(root=str(root)), today, rep)
+            continue
+        text, name = cli.read_file_arg(f)
+        if name.endswith(".md"):
+            _lint_md(text, name, rep)
+            continue
+        doc = _parse(text, name, rep)
+        if doc is None:
+            clean = clean and _header_type(text) != "mem"
+        elif doc.header.typ == "mem":
+            mems.append(("hist" if _is_hist(name) else "mem", name, doc))
+        else:
+            _lint_one(doc, name, rep, today)
+    if mems:
+        mems.sort(key=lambda d: d[0] != "hist")  # stable: argument order within each
+        _check_group(mems, rep, today, clean)
 
 
 def _store_root(f: str):
@@ -296,10 +372,10 @@ def lint_store(s: store.Store, today=None) -> tuple:
     return rep.errors, rep.warnings
 
 
-def lint_text(text: str, path: str) -> tuple:
+def lint_text(text: str, path: str, today=None) -> tuple:
     """(errors, warnings) for one file's text; `.md` paths lint their adl2 blocks."""
     rep = _Report()
-    _lint_text(text, path, rep)
+    _lint_text(text, path, rep, today)
     return rep.errors, rep.warnings
 
 
@@ -311,15 +387,7 @@ def cmd_lint(args) -> int:
     rep = _Report()
     if not args.files:
         _lint_store(store.Store.open(root=args.root), args.today, rep)
-    roots = set()
-    for f in args.files:
-        root = _store_root(f)
-        if root is None:
-            text, name = cli.read_file_arg(f)
-            _lint_text(text, name, rep)
-        elif root not in roots:
-            roots.add(root)
-            _lint_store(store.Store.open(root=str(root)), args.today, rep)
+    _lint_files(args.files, args.today, rep)
     for line in rep.lines() + rep.notes:
         print(line)
     e, w = len(rep.errors), len(rep.warnings)
