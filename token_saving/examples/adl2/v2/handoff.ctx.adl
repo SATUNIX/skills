@@ -1,0 +1,14 @@
+@adl2 msg:ctx from:w1 to:main re:t4 base:-
+% inline
+$api inference API (FastAPI, router/api.py)
+$rt request router (router/)
+r2 $rt SHOULD retry idempotent requests at most 3 times [user]
+f2 $api.timeout=30s [repo:router/config.toml]
+t4 ready add retry with backoff to $rt client needs:f2,r2
+t4 -> doing
+% delta
+t4 -> done
+v+1 router/client.py: retry idempotent requests 3x with exponential backoff base=200ms [repo:router/client.py] @2026-11-03
+e+1 load test log @2026-11-03 see:.adl/ev/load-1103.txt
+f+1 $api returns 503 above 200 rps [e+1]
+t+1 ready add circuit breaker to $rt client needs:f+1
